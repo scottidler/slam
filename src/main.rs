@@ -1,5 +1,6 @@
 // src/main.rs
 
+
 use clap::Parser;
 use eyre::Result;
 use glob::glob;
@@ -46,31 +47,34 @@ struct Repo {
 
 impl Repo {
     /// Output the repository information to the console
-    fn output(&self, filter_files: bool, root: &Path, execute: bool) {
-        // Skip repositories with no matching files
-        if filter_files && self.files.is_empty() {
-            return;
-        }
+    fn output(&self, root: &Path, execute: bool) -> bool {
+        let mut changed_files = Vec::new();
 
-        // Print repository name
-        println!("{}", self.reponame);
-
-        if filter_files {
-            for file in &self.files {
-                println!("  {}", file);
-
-                // If `change` is specified, generate and optionally apply the diff
-                if let Some((pattern, replacement)) = &self.change {
-                    let full_path = root.join(&self.reponame).join(file);
-                    if let Some(diff) = self.process_file(&full_path, pattern, replacement, execute)
-                    {
-                        for line in diff.lines() {
-                            println!("    {}", line);
-                        }
-                    }
+        // Collect files with changes
+        for file in &self.files {
+            if let Some((pattern, replacement)) = &self.change {
+                let full_path = root.join(&self.reponame).join(file);
+                if let Some(diff) = self.process_file(&full_path, pattern, replacement, execute) {
+                    changed_files.push((file.clone(), diff));
                 }
             }
         }
+
+        // If no files have changes, skip the repository
+        if changed_files.is_empty() {
+            return false;
+        }
+
+        // Print repository name and changed files
+        println!("{}", self.reponame);
+        for (file, diff) in changed_files {
+            println!("  {}", file);
+            for line in diff.lines() {
+                println!("    {}", line);
+            }
+        }
+
+        true
     }
 
     /// Process a file to generate a diff and optionally apply changes
@@ -137,6 +141,7 @@ impl Repo {
         Some(diff)
     }
 
+    /// Generate a reduced diff with context, line numbers, and colors
     fn generate_diff(&self, original: &str, updated: &str) -> String {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
@@ -231,12 +236,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // Determine whether to filter based on files
-    let filter_files = opts.files.is_some();
-
     // Output all repositories
     for repo in &repo_list {
-        repo.output(filter_files, &root, opts.execute);
+        repo.output(&root, opts.execute);
     }
 
     Ok(())
