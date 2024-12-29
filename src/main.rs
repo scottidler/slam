@@ -12,48 +12,40 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Slam: Operates on multiple repositories
 #[derive(Parser, Debug)]
 #[command(name = "slam", about = "Finds and operates on repositories")]
 struct SlamOpts {
-    /// Root directory to search for repositories
-    #[arg(short = 'R', long, help = "Root directory to search for repositories")]
-    root: Option<PathBuf>,
-
-    /// Glob pattern to find files within each repository
     #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
     files: Option<String>,
 
-    /// Pattern to match in files
     #[arg(short = 'p', long, help = "Pattern to match in files")]
     pattern: Option<String>,
 
-    /// Value to replace the matched pattern with
     #[arg(short = 'r', long, help = "Value to replace the matched pattern with")]
     replace: Option<String>,
 
-    /// Number of context lines in the diff output
     #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
     buffer: usize,
 
-    /// Execute the changes instead of a dry run
     #[arg(short = 'e', long, help = "Execute changes instead of a dry run")]
     execute: bool,
+
+    #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
+    repos: Vec<String>,
 }
+
 
 /// Representation of a repository
 struct Repo {
-    reponame: String,                // Full slug (e.g., scottidler/ssl)
-    change: Option<(String, String)>, // (pattern, replacement)
-    files: Vec<String>,              // List of matching files
+    reponame: String,                   // Full slug (e.g., scottidler/ssl)
+    change: Option<(String, String)>,   // (pattern, replacement)
+    files: Vec<String>,                 // List of matching files
 }
 
 impl Repo {
-    /// Output the repository information to the console
     fn output(&self, root: &Path, execute: bool, buffer: usize) -> bool {
         let mut changed_files = Vec::new();
 
-        // Collect files with changes
         for file in &self.files {
             if let Some((pattern, replacement)) = &self.change {
                 let full_path = root.join(&self.reponame).join(file);
@@ -63,12 +55,10 @@ impl Repo {
             }
         }
 
-        // If no files have changes, skip the repository
         if changed_files.is_empty() {
             return false;
         }
 
-        // Print repository name and changed files
         println!("{}", self.reponame);
         for (file, diff) in changed_files {
             println!("  {}", file);
@@ -80,7 +70,6 @@ impl Repo {
         true
     }
 
-    /// Process a file to generate a diff and optionally apply changes
     fn process_file(
         &self,
         full_path: &Path,
@@ -91,7 +80,6 @@ impl Repo {
     ) -> Option<String> {
         debug!("Processing file '{}'", full_path.display());
 
-        // Read the file content
         let content = match read_to_string(full_path) {
             Ok(content) => content,
             Err(err) => {
@@ -100,7 +88,6 @@ impl Repo {
             }
         };
 
-        // Check if the pattern exists in the file
         if !content.contains(pattern) {
             debug!(
                 "Pattern '{}' not found in file '{}'",
@@ -116,7 +103,6 @@ impl Repo {
             full_path.display()
         );
 
-        // Prepare updated content
         let updated_content = content.replace(pattern, replacement);
 
         if updated_content == content {
@@ -127,11 +113,9 @@ impl Repo {
             return None;
         }
 
-        // Generate the diff
         let diff = self.generate_diff(&content, &updated_content, buffer);
 
         if execute {
-            // Apply changes if execute is true
             if let Err(err) = write(full_path, &updated_content) {
                 debug!(
                     "Failed to write updated content to '{}': {}",
@@ -145,14 +129,13 @@ impl Repo {
         Some(diff)
     }
 
-    /// Generate a reduced diff with context, line numbers, and colors
     fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
 
         for (group_index, group) in diff.grouped_ops(buffer).iter().enumerate() {
             if group_index > 0 {
-                result.push_str("\n...\n"); // Separator between groups of changes
+                result.push_str("\n...\n");
             }
 
             for op in group {
@@ -177,7 +160,6 @@ impl Repo {
                             );
                         }
                         ChangeTag::Equal => {
-                            // Add context lines
                             result.push_str(&format!(
                                 " {:4} | {}",
                                 change.old_index().unwrap() + 1,
@@ -194,14 +176,11 @@ impl Repo {
 }
 
 fn main() -> Result<()> {
-    env_logger::init(); // Initialize the logger
+    env_logger::init();
 
     let opts = SlamOpts::parse();
 
-    let root = opts
-        .root
-        .unwrap_or_else(|| env::current_dir().expect("Failed to get current directory"));
-
+    let root = env::current_dir().expect("Failed to get current directory");
     info!("Starting search in root directory: {}", root.display());
 
     let repos = find_git_repositories(&root)?;
@@ -212,7 +191,6 @@ fn main() -> Result<()> {
             let reponame = relative_repo.display().to_string();
             let mut files = Vec::new();
 
-            // Handle file glob matching
             if let Some(ref pattern) = opts.files {
                 let matched_files = find_files_in_repo(&repo, pattern)?;
                 files.extend(
@@ -224,7 +202,6 @@ fn main() -> Result<()> {
                 files.sort();
             }
 
-            // Skip repos without matching files if -f is provided
             if opts.files.is_some() && files.is_empty() {
                 continue;
             }
@@ -236,25 +213,24 @@ fn main() -> Result<()> {
             );
 
             let repo_entry = Repo {
-                reponame,
-                change: opts.pattern.clone().zip(opts.replace.clone()), // Combine pattern and replacement if both exist
+                reponame: reponame.clone(),
+                change: opts.pattern.clone().zip(opts.replace.clone()),
                 files,
             };
 
-            repo_list.push(repo_entry);
+            if opts.repos.is_empty() || opts.repos.iter().any(|arg| reponame.contains(arg)) {
+                repo_list.push(repo_entry);
+            }
         }
     }
 
-    // Output repositories
     if opts.pattern.is_some() && opts.replace.is_some() {
-        // Output repositories with diffs
         for repo in &repo_list {
             if repo.output(&root, opts.execute, opts.buffer) {
                 continue;
             }
         }
     } else if opts.files.is_some() {
-        // Only output repositories with matching files
         for repo in &repo_list {
             if !repo.files.is_empty() {
                 println!("{}", repo.reponame);
@@ -264,7 +240,6 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        // Default behavior: List all repositories
         for repo in &repo_list {
             println!("{}", repo.reponame);
         }
