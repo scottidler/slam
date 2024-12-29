@@ -4,6 +4,7 @@ use clap::Parser;
 use eyre::Result;
 use glob::glob;
 use log::{debug, info};
+use colored::*;
 use similar::{ChangeTag, TextDiff};
 use std::{
     env,
@@ -136,26 +137,6 @@ impl Repo {
         Some(diff)
     }
 
-    /*
-    /// Generate a unified diff between original and updated content
-    fn generate_diff(&self, original: &str, updated: &str) -> String {
-        let diff = TextDiff::from_lines(original, updated);
-        let mut result = String::new();
-
-        for change in diff.iter_all_changes() {
-            let symbol = match change.tag() {
-                ChangeTag::Delete => "-",
-                ChangeTag::Insert => "+",
-                ChangeTag::Equal => " ",
-            };
-
-            result.push_str(&format!("{}{}", symbol, change));
-        }
-
-        result
-    }
-    */
-
     fn generate_diff(&self, original: &str, updated: &str) -> String {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
@@ -169,14 +150,30 @@ impl Repo {
                 for change in diff.iter_changes(op) {
                     match change.tag() {
                         ChangeTag::Delete => {
-                            result.push_str(&format!("-{:4} | {}", change.old_index().unwrap() + 1, change));
+                            result.push_str(
+                                &format!(
+                                    "{} | {}",
+                                    format!("-{:4}", change.old_index().unwrap() + 1).red(),
+                                    change.to_string().red()
+                                )
+                            );
                         }
                         ChangeTag::Insert => {
-                            result.push_str(&format!("+{:4} | {}", change.new_index().unwrap() + 1, change));
+                            result.push_str(
+                                &format!(
+                                    "{} | {}",
+                                    format!("+{:4}", change.new_index().unwrap() + 1).green(),
+                                    change.to_string().green()
+                                )
+                            );
                         }
                         ChangeTag::Equal => {
                             // Add context lines
-                            result.push_str(&format!(" {:4} | {}", change.old_index().unwrap() + 1, change));
+                            result.push_str(&format!(
+                                " {:4} | {}",
+                                change.old_index().unwrap() + 1,
+                                change
+                            ));
                         }
                     }
                 }
