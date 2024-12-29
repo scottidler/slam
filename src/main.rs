@@ -1,6 +1,5 @@
 // src/main.rs
 
-
 use clap::Parser;
 use eyre::Result;
 use glob::glob;
@@ -208,6 +207,7 @@ fn main() -> Result<()> {
             let reponame = relative_repo.display().to_string();
             let mut files = Vec::new();
 
+            // Handle file glob matching
             if let Some(ref pattern) = opts.files {
                 let matched_files = find_files_in_repo(&repo, pattern)?;
                 files.extend(
@@ -216,9 +216,13 @@ fn main() -> Result<()> {
                         .map(|f| f.display().to_string())
                         .collect::<Vec<_>>(),
                 );
+                files.sort();
             }
 
-            files.sort();
+            // Skip repos without matching files if -f is provided
+            if opts.files.is_some() && files.is_empty() {
+                continue;
+            }
 
             debug!(
                 "Repository '{}' has {} matching files.",
@@ -236,9 +240,20 @@ fn main() -> Result<()> {
         }
     }
 
-    // Output all repositories
-    for repo in &repo_list {
-        repo.output(&root, opts.execute);
+    // Output repositories
+    if opts.files.is_some() || opts.pattern.is_some() {
+        // Only output repositories with files or diffs
+        for repo in &repo_list {
+            if repo.output(&root, opts.execute) {
+                // Continue if changes were successfully output
+                continue;
+            }
+        }
+    } else {
+        // Default behavior: List all repositories
+        for repo in &repo_list {
+            println!("{}", repo.reponame);
+        }
     }
 
     Ok(())
