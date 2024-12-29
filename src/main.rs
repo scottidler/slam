@@ -241,12 +241,21 @@ fn main() -> Result<()> {
     }
 
     // Output repositories
-    if opts.files.is_some() || opts.pattern.is_some() {
-        // Only output repositories with files or diffs
+    if opts.pattern.is_some() && opts.replace.is_some() {
+        // Output repositories with diffs
         for repo in &repo_list {
             if repo.output(&root, opts.execute) {
-                // Continue if changes were successfully output
                 continue;
+            }
+        }
+    } else if opts.files.is_some() {
+        // Only output repositories with matching files
+        for repo in &repo_list {
+            if !repo.files.is_empty() {
+                println!("{}", repo.reponame);
+                for file in &repo.files {
+                    println!("  {}", file);
+                }
             }
         }
     } else {
