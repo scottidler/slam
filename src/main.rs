@@ -32,6 +32,10 @@ struct SlamOpts {
     #[arg(short = 'r', long, help = "Value to replace the matched pattern with")]
     replace: Option<String>,
 
+    /// Number of context lines in the diff output
+    #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
+    buffer: usize,
+
     /// Execute the changes instead of a dry run
     #[arg(short = 'e', long, help = "Execute changes instead of a dry run")]
     execute: bool,
@@ -46,14 +50,14 @@ struct Repo {
 
 impl Repo {
     /// Output the repository information to the console
-    fn output(&self, root: &Path, execute: bool) -> bool {
+    fn output(&self, root: &Path, execute: bool, buffer: usize) -> bool {
         let mut changed_files = Vec::new();
 
         // Collect files with changes
         for file in &self.files {
             if let Some((pattern, replacement)) = &self.change {
                 let full_path = root.join(&self.reponame).join(file);
-                if let Some(diff) = self.process_file(&full_path, pattern, replacement, execute) {
+                if let Some(diff) = self.process_file(&full_path, pattern, replacement, execute, buffer) {
                     changed_files.push((file.clone(), diff));
                 }
             }
@@ -83,6 +87,7 @@ impl Repo {
         pattern: &str,
         replacement: &str,
         execute: bool,
+        buffer: usize,
     ) -> Option<String> {
         debug!("Processing file '{}'", full_path.display());
 
@@ -123,7 +128,7 @@ impl Repo {
         }
 
         // Generate the diff
-        let diff = self.generate_diff(&content, &updated_content);
+        let diff = self.generate_diff(&content, &updated_content, buffer);
 
         if execute {
             // Apply changes if execute is true
@@ -141,11 +146,11 @@ impl Repo {
     }
 
     /// Generate a reduced diff with context, line numbers, and colors
-    fn generate_diff(&self, original: &str, updated: &str) -> String {
+    fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
 
-        for (group_index, group) in diff.grouped_ops(3).iter().enumerate() {
+        for (group_index, group) in diff.grouped_ops(buffer).iter().enumerate() {
             if group_index > 0 {
                 result.push_str("\n...\n"); // Separator between groups of changes
             }
@@ -244,7 +249,7 @@ fn main() -> Result<()> {
     if opts.pattern.is_some() && opts.replace.is_some() {
         // Output repositories with diffs
         for repo in &repo_list {
-            if repo.output(&root, opts.execute) {
+            if repo.output(&root, opts.execute, opts.buffer) {
                 continue;
             }
         }
