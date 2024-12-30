@@ -32,7 +32,6 @@ struct SlamOpts {
         short = 'c',
         long,
         help = "Commit changes with an optional message",
-        require_equals = true,
         default_missing_value = "",
         num_args(0..=1)
     )]
