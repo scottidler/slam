@@ -15,7 +15,7 @@ use std::{
 
 #[derive(Parser, Debug)]
 #[command(name = "slam", about = "Finds and operates on repositories")]
-struct SlamOpts {
+struct SlamCli {
     #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
     files: Option<String>,
 
@@ -41,7 +41,6 @@ struct SlamOpts {
     repos: Vec<String>,
 }
 
-/// Representation of a repository
 struct Repo {
     reponame: String,                   // Full slug (e.g., scottidler/ssl)
     change: Option<(String, String)>,   // (pattern, replacement)
@@ -55,7 +54,7 @@ impl Repo {
         for file in &self.files {
             if let Some((pattern, replacement)) = &self.change {
                 let full_path = root.join(&self.reponame).join(file);
-                if let Some(diff) = self.process_file(&full_path, pattern, replacement, buffer) {
+                if let Some(diff) = self.process_file(&full_path, pattern, replacement, buffer, commit_msg.is_some()) {
                     changed_files.push((file.clone(), diff));
                 }
             }
@@ -86,6 +85,7 @@ impl Repo {
         pattern: &str,
         replacement: &str,
         buffer: usize,
+        commit: bool,
     ) -> Option<String> {
         debug!("Processing file '{}'", full_path.display());
 
@@ -124,13 +124,15 @@ impl Repo {
 
         let diff = self.generate_diff(&content, &updated_content, buffer);
 
-        if let Err(err) = write(full_path, &updated_content) {
-            debug!(
-                "Failed to write updated content to '{}': {}",
-                full_path.display(),
-                err
-            );
-            return None;
+        if commit {
+            if let Err(err) = write(full_path, &updated_content) {
+                debug!(
+                    "Failed to write updated content to '{}': {}",
+                    full_path.display(),
+                    err
+                );
+                return None;
+            }
         }
 
         Some(diff)
@@ -140,8 +142,8 @@ impl Repo {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
 
-        for (group_index, group) in diff.grouped_ops(buffer).iter().enumerate() {
-            if group_index > 0 {
+        for (index, group) in diff.grouped_ops(buffer).iter().enumerate() {
+            if index > 0 {
                 result.push_str("\n...\n");
             }
 
@@ -232,7 +234,7 @@ impl Repo {
 fn main() -> Result<()> {
     env_logger::init();
 
-    let opts = SlamOpts::parse();
+    let cli = SlamCli::parse();
 
     let root = env::current_dir().expect("Failed to get current directory");
     info!("Starting search in root directory: {}", root.display());
@@ -245,7 +247,7 @@ fn main() -> Result<()> {
             let reponame = relative_repo.display().to_string();
             let mut files = Vec::new();
 
-            if let Some(ref pattern) = opts.files {
+            if let Some(ref pattern) = cli.files {
                 let matched_files = find_files_in_repo(&repo, pattern)?;
                 files.extend(
                     matched_files
@@ -256,7 +258,7 @@ fn main() -> Result<()> {
                 files.sort();
             }
 
-            if opts.files.is_some() && files.is_empty() {
+            if cli.files.is_some() && files.is_empty() {
                 continue;
             }
 
@@ -268,23 +270,23 @@ fn main() -> Result<()> {
 
             let repo_entry = Repo {
                 reponame: reponame.clone(),
-                change: opts.pattern.clone().zip(opts.replace.clone()),
+                change: cli.pattern.clone().zip(cli.replace.clone()),
                 files,
             };
 
-            if opts.repos.is_empty() || opts.repos.iter().any(|arg| reponame.contains(arg)) {
+            if cli.repos.is_empty() || cli.repos.iter().any(|arg| reponame.contains(arg)) {
                 repo_list.push(repo_entry);
             }
         }
     }
 
-    if opts.pattern.is_some() && opts.replace.is_some() {
+    if cli.pattern.is_some() && cli.replace.is_some() {
         for repo in &repo_list {
-            if repo.output(&root, opts.commit.as_deref(), opts.buffer) {
+            if repo.output(&root, cli.commit.as_deref(), cli.buffer) {
                 continue;
             }
         }
-    } else if opts.files.is_some() {
+    } else if cli.files.is_some() {
         for repo in &repo_list {
             if !repo.files.is_empty() {
                 println!("{}", repo.reponame);
