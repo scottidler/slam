@@ -10,6 +10,7 @@ use std::{
     env,
     fs::{self, read_to_string, write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 #[derive(Parser, Debug)]
@@ -27,13 +28,19 @@ struct SlamOpts {
     #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
     buffer: usize,
 
-    #[arg(short = 'e', long, help = "Execute changes instead of a dry run")]
-    execute: bool,
+    #[arg(
+        short = 'c',
+        long,
+        help = "Commit changes with an optional message",
+        require_equals = true,
+        default_missing_value = "",
+        num_args(0..=1)
+    )]
+    commit: Option<String>,
 
     #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
     repos: Vec<String>,
 }
-
 
 /// Representation of a repository
 struct Repo {
@@ -43,13 +50,13 @@ struct Repo {
 }
 
 impl Repo {
-    fn output(&self, root: &Path, execute: bool, buffer: usize) -> bool {
+    fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize) -> bool {
         let mut changed_files = Vec::new();
 
         for file in &self.files {
             if let Some((pattern, replacement)) = &self.change {
                 let full_path = root.join(&self.reponame).join(file);
-                if let Some(diff) = self.process_file(&full_path, pattern, replacement, execute, buffer) {
+                if let Some(diff) = self.process_file(&full_path, pattern, replacement, buffer) {
                     changed_files.push((file.clone(), diff));
                 }
             }
@@ -60,11 +67,15 @@ impl Repo {
         }
 
         println!("{}", self.reponame);
-        for (file, diff) in changed_files {
+        for (file, diff) in &changed_files {
             println!("  {}", file);
             for line in diff.lines() {
                 println!("    {}", line);
             }
+        }
+
+        if let Some(commit_msg) = commit_msg {
+            self.commit_changes(&root.join(&self.reponame), commit_msg);
         }
 
         true
@@ -75,7 +86,6 @@ impl Repo {
         full_path: &Path,
         pattern: &str,
         replacement: &str,
-        execute: bool,
         buffer: usize,
     ) -> Option<String> {
         debug!("Processing file '{}'", full_path.display());
@@ -115,15 +125,13 @@ impl Repo {
 
         let diff = self.generate_diff(&content, &updated_content, buffer);
 
-        if execute {
-            if let Err(err) = write(full_path, &updated_content) {
-                debug!(
-                    "Failed to write updated content to '{}': {}",
-                    full_path.display(),
-                    err
-                );
-                return None;
-            }
+        if let Err(err) = write(full_path, &updated_content) {
+            debug!(
+                "Failed to write updated content to '{}': {}",
+                full_path.display(),
+                err
+            );
+            return None;
         }
 
         Some(diff)
@@ -144,26 +152,26 @@ impl Repo {
                         ChangeTag::Delete => {
                             result.push_str(
                                 &format!(
-                                    "{} | {}",
+                                    "{} | {}\n",
                                     format!("-{:4}", change.old_index().unwrap() + 1).red(),
-                                    change.to_string().red()
+                                    change.to_string().trim_end().red()
                                 )
                             );
                         }
                         ChangeTag::Insert => {
                             result.push_str(
                                 &format!(
-                                    "{} | {}",
+                                    "{} | {}\n",
                                     format!("+{:4}", change.new_index().unwrap() + 1).green(),
-                                    change.to_string().green()
+                                    change.to_string().trim_end().green()
                                 )
                             );
                         }
                         ChangeTag::Equal => {
                             result.push_str(&format!(
-                                " {:4} | {}",
+                                " {:4} | {}\n",
                                 change.old_index().unwrap() + 1,
-                                change
+                                change.to_string().trim_end()
                             ));
                         }
                     }
@@ -172,6 +180,53 @@ impl Repo {
         }
 
         result
+    }
+
+    fn commit_changes(&self, repo_path: &Path, user_message: &str) {
+        let title = if user_message.is_empty() {
+            "SLAM: Changes applied by slam".to_string()
+        } else {
+            format!("SLAM: {}", user_message)
+        };
+
+        let mut commit_body = String::new();
+        if let Some((pattern, replacement)) = &self.change {
+            let diff = self.generate_diff(
+                &pattern.replace("\"", ""),
+                &replacement.replace("\"", ""),
+                1,
+            );
+            commit_body.push_str(&diff);
+            commit_body.push('\n');
+        }
+
+        commit_body.push_str("docs: https://github.com/scottidler/slam/blob/main/README.md");
+
+        let commit_message = format!("{}\n\n{}", title, commit_body);
+
+        debug!("Committing changes to '{}'", repo_path.display());
+
+        let status = Command::new("git")
+            .current_dir(repo_path)
+            .args(["add", "."])
+            .status();
+
+        if let Ok(status) = status {
+            if status.success() {
+                let commit = Command::new("git")
+                    .current_dir(repo_path)
+                    .args(["commit", "-m", &commit_message])
+                    .status();
+
+                if let Err(err) = commit {
+                    debug!("Failed to commit changes: {}", err);
+                }
+            } else {
+                debug!("Git add failed.");
+            }
+        } else {
+            debug!("Git add command failed to execute.");
+        }
     }
 }
 
@@ -226,7 +281,7 @@ fn main() -> Result<()> {
 
     if opts.pattern.is_some() && opts.replace.is_some() {
         for repo in &repo_list {
-            if repo.output(&root, opts.execute, opts.buffer) {
+            if repo.output(&root, opts.commit.as_deref(), opts.buffer) {
                 continue;
             }
         }
