@@ -19,11 +19,14 @@ struct SlamCli {
     #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
     files: Option<String>,
 
-    #[arg(short = 'p', long, help = "Pattern to match in files")]
-    pattern: Option<String>,
-
-    #[arg(short = 'r', long, help = "Value to replace the matched pattern with")]
-    replace: Option<String>,
+    #[arg(
+        short = 'g',
+        long,
+        value_names = &["PTN", "REPL"],
+        num_args = 2,
+        help = "Pattern and replacement for matched lines"
+    )]
+    glob: Option<Vec<String>>,
 
     #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
     buffer: usize,
@@ -239,6 +242,12 @@ fn main() -> Result<()> {
     let root = env::current_dir().expect("Failed to get current directory");
     info!("Starting search in root directory: {}", root.display());
 
+    // Extract `PTN` and `REPL` from `--glob`
+    let pattern_replace = cli
+        .glob
+        .as_ref()
+        .map(|args| (args[0].clone(), args[1].clone()));
+
     let repos = find_git_repositories(&root)?;
     let mut repo_list = Vec::new();
 
@@ -270,7 +279,7 @@ fn main() -> Result<()> {
 
             let repo_entry = Repo {
                 reponame: reponame.clone(),
-                change: cli.pattern.clone().zip(cli.replace.clone()),
+                change: pattern_replace.clone(),
                 files,
             };
 
@@ -280,10 +289,11 @@ fn main() -> Result<()> {
         }
     }
 
-    if cli.pattern.is_some() && cli.replace.is_some() {
+    if let Some((pattern, replacement)) = pattern_replace {
         for repo in &repo_list {
             if repo.output(&root, cli.commit.as_deref(), cli.buffer) {
-                continue;
+                println!("Applying pattern '{}' with replacement '{}' in repo '{}'.",
+                        pattern, replacement, repo.reponame);
             }
         }
     } else if cli.files.is_some() {
