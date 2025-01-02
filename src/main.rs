@@ -1,6 +1,6 @@
 // src/main.rs
 
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use eyre::Result;
 use glob::glob;
 use log::{debug, info};
@@ -12,21 +12,40 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use regex::Regex;
+
+#[derive(Debug, Clone)]
+pub enum Change {
+    Sub(String, String), // Updated from Glob
+    Regex(String, String),
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "slam", about = "Finds and operates on repositories")]
+#[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
 struct SlamCli {
     #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
     files: Option<String>,
 
     #[arg(
-        short = 'g',
-        long,
+        short = 's',
+        long = "sub",
         value_names = &["PTN", "REPL"],
         num_args = 2,
-        help = "Pattern and replacement for matched lines"
+        help = "Substring and replacement (requires two arguments)",
+        group = "change_type"
     )]
-    glob: Option<Vec<String>>,
+    sub: Option<Vec<String>>,
+
+    #[arg(
+        short = 'r',
+        long = "regex",
+        value_names = &["PTN", "REPL"],
+        num_args = 2,
+        help = "Regex pattern and replacement (requires two arguments)",
+        group = "change_type"
+    )]
+    regex: Option<Vec<String>>,
 
     #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
     buffer: usize,
@@ -46,7 +65,7 @@ struct SlamCli {
 
 struct Repo {
     reponame: String,                   // Full slug (e.g., scottidler/ssl)
-    change: Option<(String, String)>,   // (pattern, replacement)
+    change: Option<Change>,
     files: Vec<String>,                 // List of matching files
 }
 
@@ -55,9 +74,9 @@ impl Repo {
         let mut changed_files = Vec::new();
 
         for file in &self.files {
-            if let Some((pattern, replacement)) = &self.change {
+            if let Some(change) = &self.change {
                 let full_path = root.join(&self.reponame).join(file);
-                if let Some(diff) = self.process_file(&full_path, pattern, replacement, buffer, commit_msg.is_some()) {
+                if let Some(diff) = self.process_file(&full_path, change, buffer, commit_msg.is_some()) {
                     changed_files.push((file.clone(), diff));
                 }
             }
@@ -85,8 +104,7 @@ impl Repo {
     fn process_file(
         &self,
         full_path: &Path,
-        pattern: &str,
-        replacement: &str,
+        change: &Change,
         buffer: usize,
         commit: bool,
     ) -> Option<String> {
@@ -100,22 +118,40 @@ impl Repo {
             }
         };
 
-        if !content.contains(pattern) {
-            debug!(
-                "Pattern '{}' not found in file '{}'",
-                pattern,
-                full_path.display()
-            );
-            return None;
-        }
-
-        debug!(
-            "Pattern '{}' found in file '{}'. Preparing to apply replacement.",
-            pattern,
-            full_path.display()
-        );
-
-        let updated_content = content.replace(pattern, replacement);
+        let updated_content = match change {
+            Change::Sub(pattern, replacement) => {
+                if !content.contains(pattern) {
+                    debug!(
+                        "Substring '{}' not found in file '{}'",
+                        pattern,
+                        full_path.display()
+                    );
+                    return None;
+                }
+                content.replace(pattern, replacement)
+            }
+            Change::Regex(pattern, replacement) => {
+                let regex = match Regex::new(pattern) {
+                    Ok(re) => re,
+                    Err(err) => {
+                        debug!(
+                            "Failed to compile regex '{}' for file '{}': {}",
+                            pattern, full_path.display(), err
+                        );
+                        return None;
+                    }
+                };
+                if !regex.is_match(&content) {
+                    debug!(
+                        "Regex '{}' did not match in file '{}'",
+                        pattern,
+                        full_path.display()
+                    );
+                    return None;
+                }
+                regex.replace_all(&content, replacement).to_string()
+            }
+        };
 
         if updated_content == content {
             debug!(
@@ -194,17 +230,19 @@ impl Repo {
         };
 
         let mut commit_body = String::new();
-        if let Some((pattern, replacement)) = &self.change {
-            let diff = self.generate_diff(
-                &pattern.replace("\"", ""),
-                &replacement.replace("\"", ""),
-                1,
-            );
-            commit_body.push_str(&diff);
-            commit_body.push('\n');
+        if let Some(change) = &self.change {
+            match change {
+                Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
+                    let diff = self.generate_diff(
+                        &pattern.replace("\"", ""),
+                        &replacement.replace("\"", ""),
+                        1,
+                    );
+                    commit_body.push_str(&diff);
+                }
+            }
         }
-
-        commit_body.push_str("docs: https://github.com/scottidler/slam/blob/main/README.md");
+        commit_body.push_str("\ndocs: https://github.com/scottidler/slam/blob/main/README.md");
 
         let commit_message = format!("{}\n\n{}", title, commit_body);
 
@@ -234,66 +272,83 @@ impl Repo {
     }
 }
 
+fn get_change(cli: &SlamCli) -> Option<Change> {
+    if let Some(sub_args) = &cli.sub {
+        Some(Change::Sub(sub_args[0].clone(), sub_args[1].clone()))
+    } else if let Some(regex_args) = &cli.regex {
+        Some(Change::Regex(regex_args[0].clone(), regex_args[1].clone()))
+    } else {
+        None
+    }
+}
+
+fn create_repo(repo: &Path, root: &Path, change: &Option<Change>, files_pattern: &Option<String>) -> Option<Repo> {
+    if let Ok(relative_repo) = repo.strip_prefix(root) {
+        let reponame = relative_repo.display().to_string();
+        let mut files = Vec::new();
+
+        if let Some(pattern) = files_pattern {
+            let matched_files = find_files_in_repo(repo, pattern).ok()?;
+            files.extend(
+                matched_files
+                    .into_iter()
+                    .map(|f| f.display().to_string())
+                    .collect::<Vec<_>>(),
+            );
+            files.sort();
+        }
+
+        if files_pattern.is_some() && files.is_empty() {
+            return None;
+        }
+
+        debug!(
+            "Repository '{}' has {} matching files.",
+            reponame,
+            files.len()
+        );
+
+        Some(Repo {
+            reponame,
+            change: change.clone(),
+            files,
+        })
+    } else {
+        None
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
 
     let cli = SlamCli::parse();
+    let change = get_change(&cli);
 
     let root = env::current_dir().expect("Failed to get current directory");
     info!("Starting search in root directory: {}", root.display());
-
-    // Extract `PTN` and `REPL` from `--glob`
-    let pattern_replace = cli
-        .glob
-        .as_ref()
-        .map(|args| (args[0].clone(), args[1].clone()));
 
     let repos = find_git_repositories(&root)?;
     let mut repo_list = Vec::new();
 
     for repo in repos {
-        if let Ok(relative_repo) = repo.strip_prefix(&root) {
-            let reponame = relative_repo.display().to_string();
-            let mut files = Vec::new();
-
-            if let Some(ref pattern) = cli.files {
-                let matched_files = find_files_in_repo(&repo, pattern)?;
-                files.extend(
-                    matched_files
-                        .into_iter()
-                        .map(|f| f.display().to_string())
-                        .collect::<Vec<_>>(),
-                );
-                files.sort();
-            }
-
-            if cli.files.is_some() && files.is_empty() {
-                continue;
-            }
-
-            debug!(
-                "Repository '{}' has {} matching files.",
-                reponame,
-                files.len()
-            );
-
-            let repo_entry = Repo {
-                reponame: reponame.clone(),
-                change: pattern_replace.clone(),
-                files,
-            };
-
-            if cli.repos.is_empty() || cli.repos.iter().any(|arg| reponame.contains(arg)) {
+        if let Some(repo_entry) = create_repo(&repo, &root, &change, &cli.files) {
+            if cli.repos.is_empty() || cli.repos.iter().any(|arg| repo_entry.reponame.contains(arg)) {
                 repo_list.push(repo_entry);
             }
         }
     }
 
-    if let Some((pattern, replacement)) = pattern_replace {
+    if let Some(change) = &change {
         for repo in &repo_list {
-            if repo.output(&root, cli.commit.as_deref(), cli.buffer) {
-                println!("Applying pattern '{}' with replacement '{}' in repo '{}'.",
-                        pattern, replacement, repo.reponame);
+            match change {
+                Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
+                    if repo.output(&root, cli.commit.as_deref(), cli.buffer) {
+                        println!(
+                            "Applying pattern '{}' with replacement '{}' in repo '{}'.",
+                            pattern, replacement, repo.reponame
+                        );
+                    }
+                }
             }
         }
     } else if cli.files.is_some() {

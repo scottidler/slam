@@ -10,6 +10,7 @@ env_logger = "0.11.6"
 eyre = "0.6.12"
 glob = "0.3.1"
 log = { version = "0.4.22", features = ["serde", "std"] }
+regex = "1.11.1"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_yaml = "0.9.34"
 similar = "2.6.0"
