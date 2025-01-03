@@ -14,14 +14,22 @@ use std::{
 };
 use regex::Regex;
 
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
+}
+
 #[derive(Debug, Clone)]
 pub enum Change {
-    Sub(String, String), // Updated from Glob
+    Sub(String, String),
     Regex(String, String),
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "slam", about = "Finds and operates on repositories")]
+#[command(
+    name = "slam",
+    about = "Finds and operates on repositories",
+    version = built_info::GIT_DESCRIBE
+)]
 #[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
 struct SlamCli {
     #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
@@ -64,9 +72,9 @@ struct SlamCli {
 }
 
 struct Repo {
-    reponame: String,                   // Full slug (e.g., scottidler/ssl)
+    reponame: String,
     change: Option<Change>,
-    files: Vec<String>,                 // List of matching files
+    files: Vec<String>,
 }
 
 impl Repo {
