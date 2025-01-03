@@ -27,7 +27,7 @@ pub enum Change {
 #[derive(Parser, Debug)]
 #[command(
     name = "slam",
-    about = "Finds and operates on repositories",
+    about = "Tool for 'slamming' in a bunch of small changes across a large number of git repos",
     version = built_info::GIT_DESCRIBE
 )]
 #[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
