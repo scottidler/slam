@@ -18,6 +18,11 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
 }
 
+fn default_branch_name() -> String {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    format!("SLAM-{}", date)
+}
+
 #[derive(Debug, Clone)]
 pub enum Change {
     Sub(String, String),
@@ -37,7 +42,7 @@ struct SlamCli {
 
     #[arg(
         short = 's',
-        long = "sub",
+        long,
         value_names = &["PTN", "REPL"],
         num_args = 2,
         help = "Substring and replacement (requires two arguments)",
@@ -47,7 +52,7 @@ struct SlamCli {
 
     #[arg(
         short = 'r',
-        long = "regex",
+        long,
         value_names = &["PTN", "REPL"],
         num_args = 2,
         help = "Regex pattern and replacement (requires two arguments)",
@@ -55,7 +60,15 @@ struct SlamCli {
     )]
     regex: Option<Vec<String>>,
 
-    #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
+    #[arg(
+        short = 'b',
+        long,
+        help = "Branch to create and commit changes on (default: 'SLAM-<YYYY-MM-DD>')",
+        default_value_t = default_branch_name()
+    )]
+    branch: String,
+
+    #[arg(short = 'B', long, default_value_t = 1, help = "Number of context lines in the diff output")]
     buffer: usize,
 
     #[arg(
@@ -78,12 +91,20 @@ struct Repo {
 }
 
 impl Repo {
-    fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize) -> bool {
+    fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize, branch_name: &str) -> bool {
+        let repo_path = root.join(&self.reponame);
+
+        // Ensure we're on the correct branch BEFORE making modifications
+        if !self.create_or_switch_branch(&repo_path, branch_name) {
+            println!("Skipping {} due to branch switching failure.", repo_path.display());
+            return false;
+        }
+
         let mut changed_files = Vec::new();
 
         for file in &self.files {
             if let Some(change) = &self.change {
-                let full_path = root.join(&self.reponame).join(file);
+                let full_path = repo_path.join(file);
                 if let Some(diff) = self.process_file(&full_path, change, buffer, commit_msg.is_some()) {
                     changed_files.push((file.clone(), diff));
                 }
@@ -103,10 +124,41 @@ impl Repo {
         }
 
         if let Some(commit_msg) = commit_msg {
-            self.commit_changes(&root.join(&self.reponame), commit_msg);
+            self.commit_changes(&repo_path, commit_msg, branch_name);
         }
 
         true
+    }
+
+    fn is_working_tree_clean(&self, repo_path: &Path) -> bool {
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["status", "--porcelain"])
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.stdout.is_empty() {
+                    debug!("Repo '{}' is clean.", repo_path.display());
+                    true
+                } else {
+                    debug!(
+                        "Repo '{}' has uncommitted changes:\n{}",
+                        repo_path.display(),
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                    false
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to check working tree status in '{}': {}",
+                    repo_path.display(),
+                    e
+                );
+                false
+            }
+        }
     }
 
     fn process_file(
@@ -230,32 +282,112 @@ impl Repo {
         result
     }
 
-    fn commit_changes(&self, repo_path: &Path, user_message: &str) {
-        let title = if user_message.is_empty() {
-            "SLAM: Changes applied by slam".to_string()
-        } else {
-            format!("SLAM: {}", user_message)
+    fn commit_changes(&self, repo_path: &Path, user_message: &str, branch_name: &str) {
+        // Ensure we're on the correct branch before committing
+        if !self.create_or_switch_branch(repo_path, branch_name) {
+            println!("Skipping {} due to branch switching failure.", repo_path.display());
+            return;
+        }
+
+        // Debugging: Check current branch
+        let branch_check = Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "--show-current"])
+            .output()
+            .expect("Failed to check branch");
+
+        println!(
+            "DEBUG: Current branch in '{}': {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&branch_check.stdout).trim()
+        );
+
+        // Debugging: Check repo state
+        let rev_parse = Command::new("git")
+            .current_dir(repo_path)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output();
+
+        if let Err(e) = rev_parse {
+            println!("DEBUG: Git rev-parse failed in '{}': {:?}", repo_path.display(), e);
+        }
+
+        // Stage all files before checking for uncommitted changes
+        self.stage_files(repo_path);
+
+        if !self.is_working_tree_clean(repo_path) {
+            println!(
+                "Skipping {} due to uncommitted changes before commit. Resolve manually.",
+                repo_path.display()
+            );
+            return;
+        }
+
+        self.commit(repo_path, user_message);
+    }
+
+    fn create_or_switch_branch(&self, repo_path: &Path, branch_name: &str) -> bool {
+        // Ensure the repo is on a valid branch
+        let head_output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .output();
+
+        let current_branch = match head_output {
+            Ok(output) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            }
+            _ => {
+                println!(
+                    "Skipping {}: Not on a valid branch or detached HEAD.",
+                    repo_path.display()
+                );
+                return false;
+            }
         };
 
-        let mut commit_body = String::new();
-        if let Some(change) = &self.change {
-            match change {
-                Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
-                    let diff = self.generate_diff(
-                        &pattern.replace("\"", ""),
-                        &replacement.replace("\"", ""),
-                        1,
-                    );
-                    commit_body.push_str(&diff);
-                }
+        println!(
+            "Repository '{}' is currently on branch '{}'.",
+            repo_path.display(),
+            current_branch
+        );
+
+        // Check if the target branch already exists
+        let branch_exists = Command::new("git")
+            .current_dir(repo_path)
+            .args(["rev-parse", "--verify", branch_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !branch_exists {
+            println!("Creating and switching to branch '{}' in '{}'", branch_name, repo_path.display());
+            let status = Command::new("git")
+                .current_dir(repo_path)
+                .args(["checkout", "-b", branch_name])
+                .status();
+
+            if let Err(err) = status {
+                eprintln!("Error creating branch {}: {}", branch_name, err);
+                return false;
+            }
+        } else {
+            println!("Switching to existing branch '{}' in '{}'", branch_name, repo_path.display());
+            let status = Command::new("git")
+                .current_dir(repo_path)
+                .args(["checkout", branch_name])
+                .status();
+
+            if let Err(err) = status {
+                eprintln!("Error switching to branch {}: {}", branch_name, err);
+                return false;
             }
         }
-        commit_body.push_str("\ndocs: https://github.com/scottidler/slam/blob/main/README.md");
 
-        let commit_message = format!("{}\n\n{}", title, commit_body);
+        true
+    }
 
-        debug!("Committing changes to '{}'", repo_path.display());
-
+    fn stage_files(&self, repo_path: &Path) -> bool {
         let status = Command::new("git")
             .current_dir(repo_path)
             .args(["add", "."])
@@ -263,19 +395,49 @@ impl Repo {
 
         if let Ok(status) = status {
             if status.success() {
-                let commit = Command::new("git")
-                    .current_dir(repo_path)
-                    .args(["commit", "-m", &commit_message])
-                    .status();
-
-                if let Err(err) = commit {
-                    debug!("Failed to commit changes: {}", err);
-                }
-            } else {
-                debug!("Git add failed.");
+                return true;
             }
+            debug!("Git add failed.");
         } else {
             debug!("Git add command failed to execute.");
+        }
+
+        false
+    }
+
+    fn commit(&self, repo_path: &Path, user_message: &str) {
+        let title = if user_message.is_empty() {
+            "SLAM: Changes applied by slam".to_string()
+        } else {
+            format!("SLAM: {}", user_message)
+        };
+
+        let commit_message = format!("{}\ndocs: https://github.com/scottidler/slam/blob/main/README.md", title);
+
+        let commit_output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["commit", "-m", &commit_message])
+            .output();
+
+        match commit_output {
+            Ok(output) => {
+                if output.status.success() {
+                    println!(
+                        "✅ Successfully committed changes in '{}':\n{}",
+                        repo_path.display(),
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                } else {
+                    eprintln!(
+                        "❌ Failed to commit changes in '{}':\n{}",
+                        repo_path.display(),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to execute git commit in '{}': {}", repo_path.display(), e);
+            }
         }
     }
 }
@@ -350,7 +512,7 @@ fn main() -> Result<()> {
         for repo in &repo_list {
             match change {
                 Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
-                    if repo.output(&root, cli.commit.as_deref(), cli.buffer) {
+                    if repo.output(&root, cli.commit.as_deref(), cli.buffer, &cli.branch) {
                         println!(
                             "Applying pattern '{}' with replacement '{}' in repo '{}'.",
                             pattern, replacement, repo.reponame
