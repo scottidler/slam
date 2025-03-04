@@ -146,6 +146,26 @@ impl Repo {
                 commit_msg
             );
             self.commit_changes(&repo_path, commit_msg, branch_name);
+
+            // Step 1: Push branch to remote
+            if !self.push_branch(&repo_path, branch_name) {
+                warn!("Skipping PR creation due to push failure.");
+                return false;
+            }
+
+            // Step 2: Create PR
+            if let Some(pr_url) = self.create_pr(&repo_path, branch_name) {
+                info!("PR created successfully: {}", pr_url);
+
+                // Step 3: Merge PR with admin rights
+                if self.merge_pr(&repo_path) {
+                    info!("PR merged successfully.");
+                } else {
+                    warn!("Failed to merge PR for repository '{}'", self.reponame);
+                }
+            } else {
+                warn!("Failed to create PR for repository '{}'", self.reponame);
+            }
         }
 
         true
@@ -343,52 +363,15 @@ impl Repo {
             return;
         }
 
-        // Debugging: Check current branch
-        let branch_check = Command::new("git")
-            .current_dir(repo_path)
-            .args(["branch", "--show-current"])
-            .output();
-
-        match branch_check {
-            Ok(output) => {
-                let current_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                debug!(
-                    "Current branch in '{}': '{}'",
-                    repo_path.display(),
-                    current_branch
-                );
-            }
-            Err(e) => {
-                error!(
-                    "Failed to check current branch in '{}': {}",
-                    repo_path.display(),
-                    e
-                );
-            }
+        // Stage all changes
+        if !self.stage_files(repo_path) {
+            warn!("Skipping commit in '{}' due to failure in staging files.", repo_path.display());
+            return;
         }
 
-        // Debugging: Check repo state
-        let rev_parse = Command::new("git")
-            .current_dir(repo_path)
-            .args(["rev-parse", "--verify", "HEAD"])
-            .output();
-
-        if let Err(e) = rev_parse {
-            error!(
-                "Git rev-parse failed in '{}': {:?}",
-                repo_path.display(),
-                e
-            );
-        }
-
-        // Stage all files before checking for uncommitted changes
-        self.stage_files(repo_path);
-
-        if !self.is_working_tree_clean(repo_path) {
-            warn!(
-                "Skipping commit in '{}' due to uncommitted changes. Resolve manually.",
-                repo_path.display()
-            );
+        // Verify that we have staged changes and no uncommitted changes
+        if self.is_working_tree_clean(repo_path) {
+            warn!("Skipping commit in '{}' because there are no changes.", repo_path.display());
             return;
         }
 
@@ -495,22 +478,37 @@ impl Repo {
     fn stage_files(&self, repo_path: &Path) -> bool {
         info!("Staging all changes in repository '{}'", repo_path.display());
 
-        let status = Command::new("git")
+        let output = Command::new("git")
             .current_dir(repo_path)
             .args(["add", "."])
-            .status();
+            .output();
 
-        match status {
-            Ok(status) if status.success() => {
+        match output {
+            Ok(output) if output.status.success() => {
+                let staged_files = Command::new("git")
+                    .current_dir(repo_path)
+                    .args(["diff", "--cached", "--name-only"])
+                    .output()
+                    .expect("Failed to check staged files");
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let staged_output = String::from_utf8_lossy(&staged_files.stdout);
+
                 info!("Successfully staged changes in '{}'", repo_path.display());
-                true
+                debug!("git add stdout: {}", stdout);
+                debug!("git add stderr: {}", stderr);
+                debug!("Staged files: {}", staged_output);
+
+                !staged_output.trim().is_empty()
             }
-            Ok(_) => {
-                warn!("Git add failed in '{}'", repo_path.display());
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("Git add failed in '{}': {}", repo_path.display(), stderr);
                 false
             }
             Err(e) => {
-                error!("Git add command failed to execute in '{}': {}", repo_path.display(), e);
+                error!("Git add command failed in '{}': {}", repo_path.display(), e);
                 false
             }
         }
@@ -562,6 +560,70 @@ impl Repo {
                 );
             }
         }
+    }
+
+    fn push_branch(&self, repo_path: &Path, branch_name: &str) -> bool {
+        info!("Pushing branch '{}' to remote in '{}'", branch_name, repo_path.display());
+
+        let status = Command::new("git")
+            .current_dir(repo_path)
+            .args(["push", "--set-upstream", "origin", branch_name])
+            .status();
+
+        if let Err(err) = status {
+            error!("Failed to push branch '{}' in '{}': {}", branch_name, repo_path.display(), err);
+            return false;
+        }
+
+        info!("Successfully pushed branch '{}' in '{}'", branch_name, repo_path.display());
+        true
+    }
+
+    fn create_pr(&self, repo_path: &Path, branch_name: &str) -> Option<String> {
+        info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), branch_name);
+
+        let pr_output = Command::new("gh")
+            .current_dir(repo_path)
+            .args([
+                "pr", "create",
+                "--title", "SLAM: Automated Update",
+                "--body", "Automated update generated by SLAM.\ndocs: https://github.com/scottidler/slam/blob/main/README.md",
+                "--base", "main",
+            ])
+            .output();
+
+        match pr_output {
+            Ok(output) if output.status.success() => {
+                let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                info!("PR created: {}", url);
+                Some(url)
+            }
+            Ok(output) => {
+                warn!("Failed to create PR: {}", String::from_utf8_lossy(&output.stderr));
+                None
+            }
+            Err(err) => {
+                error!("Failed to execute `gh pr create`: {}", err);
+                None
+            }
+        }
+    }
+
+    fn merge_pr(&self, repo_path: &Path) -> bool {
+        info!("Merging pull request with admin rights in '{}'", repo_path.display());
+
+        let merge_output = Command::new("gh")
+            .current_dir(repo_path)
+            .args(["pr", "merge", "--admin", "--squash", "--delete-branch"])
+            .status();
+
+        if let Err(err) = merge_output {
+            error!("Failed to merge PR: {}", err);
+            return false;
+        }
+
+        info!("PR successfully merged and branch deleted.");
+        true
     }
 }
 
