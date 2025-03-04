@@ -1,6 +1,4 @@
-// src/main.rs
-
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, Subcommand};
 use eyre::Result;
 use glob::glob;
 use log::{info, debug, warn, error};
@@ -27,66 +25,89 @@ fn default_branch_name() -> String {
     branch_name
 }
 
-
 #[derive(Debug, Clone)]
 pub enum Change {
     Sub(String, String),
     Regex(String, String),
 }
 
+// Replaces the old single-command parser with a subcommand approach:
 #[derive(Parser, Debug)]
 #[command(
     name = "slam",
     about = "Finds and operates on repositories",
     version = built_info::GIT_DESCRIBE
 )]
-#[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
 struct SlamCli {
-    #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
-    files: Option<String>,
+    #[command(subcommand)]
+    command: SlamCommand,
+}
 
-    #[arg(
-        short = 's',
-        long,
-        value_names = &["PTN", "REPL"],
-        num_args = 2,
-        help = "Substring and replacement (requires two arguments)",
-        group = "change_type"
-    )]
-    sub: Option<Vec<String>>,
+#[derive(Subcommand, Debug)]
+enum SlamCommand {
+    /// Create and commit changes in repositories (alias: alleyoop)
+    #[command(alias = "alleyoop")]
+    #[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
+    Create {
+        #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
+        files: Option<String>,
 
-    #[arg(
-        short = 'r',
-        long,
-        value_names = &["PTN", "REPL"],
-        num_args = 2,
-        help = "Regex pattern and replacement (requires two arguments)",
-        group = "change_type"
-    )]
-    regex: Option<Vec<String>>,
+        #[arg(
+            short = 's',
+            long,
+            value_names = &["PTN", "REPL"],
+            num_args = 2,
+            help = "Substring and replacement (requires two arguments)"
+        )]
+        sub: Option<Vec<String>>,
 
-    #[arg(
-        short = 'b',
-        long,
-        help = "Branch to create and commit changes on (default: 'SLAM-<YYYY-MM-DD>')",
-        default_value_t = default_branch_name()
-    )]
-    branch: String,
+        #[arg(
+            short = 'r',
+            long,
+            value_names = &["PTN", "REPL"],
+            num_args = 2,
+            help = "Regex pattern and replacement (requires two arguments)"
+        )]
+        regex: Option<Vec<String>>,
 
-    #[arg(short = 'B', long, default_value_t = 1, help = "Number of context lines in the diff output")]
-    buffer: usize,
+        #[arg(
+            short = 'b',
+            long,
+            help = "Branch to create and commit changes on (default: 'SLAM-<YYYY-MM-DD>')",
+            default_value_t = default_branch_name()
+        )]
+        branch: String,
 
-    #[arg(
-        short = 'c',
-        long,
-        help = "Commit changes with an optional message",
-        default_missing_value = "",
-        num_args(0..=1)
-    )]
-    commit: Option<String>,
+        #[arg(short = 'B', long, default_value_t = 1, help = "Number of context lines in the diff output")]
+        buffer: usize,
 
-    #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
-    repos: Vec<String>,
+        #[arg(
+            short = 'c',
+            long,
+            help = "Commit changes with an optional message",
+            default_missing_value = "",
+            num_args(0..=1)
+        )]
+        commit: Option<String>,
+
+        #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
+        repos: Vec<String>,
+    },
+
+    /// Approve and merge changes in repositories (alias: dunk) - Not yet implemented
+    #[command(alias = "dunk")]
+    Approve {
+        #[arg(
+            short = 'b',
+            long,
+            help = "Branch to create and commit changes on (default: 'SLAM-<YYYY-MM-DD>')",
+            default_value_t = default_branch_name()
+        )]
+        branch: String,
+
+        #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
+        repos: Vec<String>,
+    },
 }
 
 struct Repo {
@@ -304,13 +325,11 @@ impl Repo {
                 for change in diff.iter_changes(op) {
                     match change.tag() {
                         ChangeTag::Delete => {
-                            result.push_str(
-                                &format!(
-                                    "{} | {}\n",
-                                    format!("-{:4}", change.old_index().unwrap() + 1).red(),
-                                    change.to_string().trim_end().red()
-                                )
-                            );
+                            result.push_str(&format!(
+                                "{} | {}\n",
+                                format!("-{:4}", change.old_index().unwrap() + 1).red(),
+                                change.to_string().trim_end().red()
+                            ));
                             debug!(
                                 "Deleted line {}: {}",
                                 change.old_index().unwrap() + 1,
@@ -318,13 +337,11 @@ impl Repo {
                             );
                         }
                         ChangeTag::Insert => {
-                            result.push_str(
-                                &format!(
-                                    "{} | {}\n",
-                                    format!("+{:4}", change.new_index().unwrap() + 1).green(),
-                                    change.to_string().trim_end().green()
-                                )
-                            );
+                            result.push_str(&format!(
+                                "{} | {}\n",
+                                format!("+{:4}", change.new_index().unwrap() + 1).green(),
+                                change.to_string().trim_end().green()
+                            ));
                             debug!(
                                 "Inserted line {}: {}",
                                 change.new_index().unwrap() + 1,
@@ -627,23 +644,25 @@ impl Repo {
     }
 }
 
-fn get_change(cli: &SlamCli) -> Option<Change> {
+fn get_change(command: &SlamCommand) -> Option<Change> {
     debug!("Parsing change arguments from CLI");
 
-    if let Some(sub_args) = &cli.sub {
-        info!(
-            "Using substring replacement: '{}' -> '{}'",
-            sub_args[0], sub_args[1]
-        );
-        return Some(Change::Sub(sub_args[0].clone(), sub_args[1].clone()));
-    }
+    if let SlamCommand::Create { sub, regex, .. } = command {
+        if let Some(sub_args) = sub {
+            info!(
+                "Using substring replacement: '{}' -> '{}'",
+                sub_args[0], sub_args[1]
+            );
+            return Some(Change::Sub(sub_args[0].clone(), sub_args[1].clone()));
+        }
 
-    if let Some(regex_args) = &cli.regex {
-        info!(
-            "Using regex replacement: '{}' -> '{}'",
-            regex_args[0], regex_args[1]
-        );
-        return Some(Change::Regex(regex_args[0].clone(), regex_args[1].clone()));
+        if let Some(regex_args) = regex {
+            info!(
+                "Using regex replacement: '{}' -> '{}'",
+                regex_args[0], regex_args[1]
+            );
+            return Some(Change::Regex(regex_args[0].clone(), regex_args[1].clone()));
+        }
     }
 
     debug!("No change argument provided");
@@ -729,52 +748,68 @@ fn main() -> Result<()> {
     let cli = SlamCli::parse();
     debug!("Parsed CLI arguments: {:?}", cli);
 
-    let change = get_change(&cli);
-    debug!("Parsed change argument: {:?}", change);
+    match cli.command {
+        SlamCommand::Create {
+            ref files,
+            sub: _,
+            regex: _,
+            ref branch,
+            buffer,
+            ref commit,
+            ref repos,
+        } => {
+            let change = get_change(&cli.command);
 
-    let root = env::current_dir().expect("Failed to get current directory");
-    info!("Starting search in root directory: {}", root.display());
+            let root = env::current_dir().expect("Failed to get current directory");
+            info!("Starting search in root directory: {}", root.display());
 
-    let repos = find_git_repositories(&root)?;
-    info!("Found {} repositories", repos.len());
+            let found_repos = find_git_repositories(&root)?;
+            info!("Found {} repositories", found_repos.len());
 
-    let mut repo_list = Vec::new();
+            let mut repo_list = Vec::new();
 
-    for repo in repos {
-        if let Some(repo_entry) = create_repo(&repo, &root, &change, &cli.files) {
-            if cli.repos.is_empty() || cli.repos.iter().any(|arg| repo_entry.reponame.contains(arg)) {
-                repo_list.push(repo_entry);
-            }
-        }
-    }
-
-    info!("Processing {} repositories", repo_list.len());
-
-    if let Some(change) = &change {
-        for repo in &repo_list {
-            match change {
-                Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
-                    if repo.output(&root, cli.commit.as_deref(), cli.buffer, &cli.branch) {
-                        info!(
-                            "Applied pattern '{}' with replacement '{}' in repo '{}'.",
-                            pattern, replacement, repo.reponame
-                        );
+            for repo in found_repos {
+                if let Some(repo_entry) = create_repo(&repo, &root, &change, &files) {
+                    if repos.is_empty() || repos.iter().any(|arg| repo_entry.reponame.contains(arg)) {
+                        repo_list.push(repo_entry);
                     }
                 }
             }
-        }
-    } else if cli.files.is_some() {
-        for repo in &repo_list {
-            if !repo.files.is_empty() {
-                info!("Repo: {}", repo.reponame);
-                for file in &repo.files {
-                    debug!("  File: {}", file);
+
+            info!("Processing {} repositories", repo_list.len());
+
+            if let Some(change) = &change {
+                for repo in &repo_list {
+                    match change {
+                        Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
+                            if repo.output(&root, commit.as_deref(), buffer, &branch) {
+                                info!(
+                                    "Applied pattern '{}' with replacement '{}' in repo '{}'.",
+                                    pattern, replacement, repo.reponame
+                                );
+                            }
+                        }
+                    }
+                }
+            } else if files.is_some() {
+                for repo in &repo_list {
+                    if !repo.files.is_empty() {
+                        info!("Repo: {}", repo.reponame);
+                        for file in &repo.files {
+                            debug!("  File: {}", file);
+                        }
+                    }
+                }
+            } else {
+                for repo in &repo_list {
+                    info!("Repo: {}", repo.reponame);
                 }
             }
         }
-    } else {
-        for repo in &repo_list {
-            info!("Repo: {}", repo.reponame);
+
+        SlamCommand::Approve { .. } => {
+            // Stub - Not Implemented
+            warn!("Approve (dunk) is not yet implemented.");
         }
     }
 
