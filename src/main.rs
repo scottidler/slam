@@ -3,7 +3,7 @@
 use clap::{ArgGroup, Parser};
 use eyre::Result;
 use glob::glob;
-use log::{debug, info};
+use log::{info, debug, warn, error};
 use colored::*;
 use similar::{ChangeTag, TextDiff};
 use std::{
@@ -20,8 +20,13 @@ mod built_info {
 
 fn default_branch_name() -> String {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    format!("SLAM-{}", date)
+    let branch_name = format!("SLAM-{}", date);
+
+    debug!("Generated default branch name: {}", branch_name);
+
+    branch_name
 }
+
 
 #[derive(Debug, Clone)]
 pub enum Change {
@@ -93,10 +98,17 @@ struct Repo {
 impl Repo {
     fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize, branch_name: &str) -> bool {
         let repo_path = root.join(&self.reponame);
+        info!(
+            "Processing repository '{}' at '{}'",
+            self.reponame, repo_path.display()
+        );
 
         // Ensure we're on the correct branch BEFORE making modifications
         if !self.create_or_switch_branch(&repo_path, branch_name) {
-            println!("Skipping {} due to branch switching failure.", repo_path.display());
+            warn!(
+                "Skipping '{}' due to branch switching failure.",
+                repo_path.display()
+            );
             return false;
         }
 
@@ -105,25 +117,34 @@ impl Repo {
         for file in &self.files {
             if let Some(change) = &self.change {
                 let full_path = repo_path.join(file);
+                debug!("Processing file '{}'", full_path.display());
+
                 if let Some(diff) = self.process_file(&full_path, change, buffer, commit_msg.is_some()) {
+                    info!("Changes detected in '{}'", full_path.display());
                     changed_files.push((file.clone(), diff));
                 }
             }
         }
 
         if changed_files.is_empty() {
+            info!("No changes detected in repository '{}'", self.reponame);
             return false;
         }
 
-        println!("{}", self.reponame);
+        info!("Changes found in repository '{}':", self.reponame);
         for (file, diff) in &changed_files {
-            println!("  {}", file);
+            info!("  Modified file: '{}'", file);
             for line in diff.lines() {
-                println!("    {}", line);
+                debug!("    {}", line);
             }
         }
 
         if let Some(commit_msg) = commit_msg {
+            info!(
+                "Committing changes in '{}' with message: '{}'",
+                repo_path.display(),
+                commit_msg
+            );
             self.commit_changes(&repo_path, commit_msg, branch_name);
         }
 
@@ -131,6 +152,8 @@ impl Repo {
     }
 
     fn is_working_tree_clean(&self, repo_path: &Path) -> bool {
+        info!("Checking if working tree is clean for '{}'", repo_path.display());
+
         let output = Command::new("git")
             .current_dir(repo_path)
             .args(["status", "--porcelain"])
@@ -139,11 +162,11 @@ impl Repo {
         match output {
             Ok(output) => {
                 if output.stdout.is_empty() {
-                    debug!("Repo '{}' is clean.", repo_path.display());
+                    info!("Repository '{}' is clean.", repo_path.display());
                     true
                 } else {
-                    debug!(
-                        "Repo '{}' has uncommitted changes:\n{}",
+                    warn!(
+                        "Repository '{}' has uncommitted changes:\n{}",
                         repo_path.display(),
                         String::from_utf8_lossy(&output.stdout)
                     );
@@ -151,7 +174,7 @@ impl Repo {
                 }
             }
             Err(e) => {
-                eprintln!(
+                error!(
                     "Failed to check working tree status in '{}': {}",
                     repo_path.display(),
                     e
@@ -168,12 +191,12 @@ impl Repo {
         buffer: usize,
         commit: bool,
     ) -> Option<String> {
-        debug!("Processing file '{}'", full_path.display());
+        info!("Processing file '{}'", full_path.display());
 
         let content = match read_to_string(full_path) {
             Ok(content) => content,
             Err(err) => {
-                debug!("Failed to read file '{}': {}", full_path.display(), err);
+                error!("Failed to read file '{}': {}", full_path.display(), err);
                 return None;
             }
         };
@@ -182,19 +205,23 @@ impl Repo {
             Change::Sub(pattern, replacement) => {
                 if !content.contains(pattern) {
                     debug!(
-                        "Substring '{}' not found in file '{}'",
+                        "Substring '{}' not found in file '{}', skipping.",
                         pattern,
                         full_path.display()
                     );
                     return None;
                 }
+                info!(
+                    "Applying substring replacement '{}' -> '{}' in '{}'",
+                    pattern, replacement, full_path.display()
+                );
                 content.replace(pattern, replacement)
             }
             Change::Regex(pattern, replacement) => {
                 let regex = match Regex::new(pattern) {
                     Ok(re) => re,
                     Err(err) => {
-                        debug!(
+                        error!(
                             "Failed to compile regex '{}' for file '{}': {}",
                             pattern, full_path.display(), err
                         );
@@ -203,12 +230,16 @@ impl Repo {
                 };
                 if !regex.is_match(&content) {
                     debug!(
-                        "Regex '{}' did not match in file '{}'",
+                        "Regex '{}' did not match in file '{}', skipping.",
                         pattern,
                         full_path.display()
                     );
                     return None;
                 }
+                info!(
+                    "Applying regex replacement '{}' -> '{}' in '{}'",
+                    pattern, replacement, full_path.display()
+                );
                 regex.replace_all(&content, replacement).to_string()
             }
         };
@@ -222,22 +253,29 @@ impl Repo {
         }
 
         let diff = self.generate_diff(&content, &updated_content, buffer);
+        info!("Generated diff for '{}'", full_path.display());
 
         if commit {
             if let Err(err) = write(full_path, &updated_content) {
-                debug!(
+                error!(
                     "Failed to write updated content to '{}': {}",
                     full_path.display(),
                     err
                 );
                 return None;
             }
+            info!("Updated file '{}' successfully.", full_path.display());
         }
 
         Some(diff)
     }
 
     fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
+        info!(
+            "Generating diff with buffer size {} for changes",
+            buffer
+        );
+
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
 
@@ -257,6 +295,11 @@ impl Repo {
                                     change.to_string().trim_end().red()
                                 )
                             );
+                            debug!(
+                                "Deleted line {}: {}",
+                                change.old_index().unwrap() + 1,
+                                change.to_string().trim_end()
+                            );
                         }
                         ChangeTag::Insert => {
                             result.push_str(
@@ -265,6 +308,11 @@ impl Repo {
                                     format!("+{:4}", change.new_index().unwrap() + 1).green(),
                                     change.to_string().trim_end().green()
                                 )
+                            );
+                            debug!(
+                                "Inserted line {}: {}",
+                                change.new_index().unwrap() + 1,
+                                change.to_string().trim_end()
                             );
                         }
                         ChangeTag::Equal => {
@@ -279,13 +327,23 @@ impl Repo {
             }
         }
 
+        info!("Diff generation complete.");
         result
     }
 
     fn commit_changes(&self, repo_path: &Path, user_message: &str, branch_name: &str) {
+        info!(
+            "Attempting to commit changes in repository '{}' on branch '{}'",
+            repo_path.display(),
+            branch_name
+        );
+
         // Ensure we're on the correct branch before committing
         if !self.create_or_switch_branch(repo_path, branch_name) {
-            println!("Skipping {} due to branch switching failure.", repo_path.display());
+            warn!(
+                "Skipping commit in '{}' due to branch switching failure.",
+                repo_path.display()
+            );
             return;
         }
 
@@ -293,14 +351,25 @@ impl Repo {
         let branch_check = Command::new("git")
             .current_dir(repo_path)
             .args(["branch", "--show-current"])
-            .output()
-            .expect("Failed to check branch");
+            .output();
 
-        println!(
-            "DEBUG: Current branch in '{}': {}",
-            repo_path.display(),
-            String::from_utf8_lossy(&branch_check.stdout).trim()
-        );
+        match branch_check {
+            Ok(output) => {
+                let current_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                debug!(
+                    "Current branch in '{}': '{}'",
+                    repo_path.display(),
+                    current_branch
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to check current branch in '{}': {}",
+                    repo_path.display(),
+                    e
+                );
+            }
+        }
 
         // Debugging: Check repo state
         let rev_parse = Command::new("git")
@@ -309,48 +378,64 @@ impl Repo {
             .output();
 
         if let Err(e) = rev_parse {
-            println!("DEBUG: Git rev-parse failed in '{}': {:?}", repo_path.display(), e);
+            error!(
+                "Git rev-parse failed in '{}': {:?}",
+                repo_path.display(),
+                e
+            );
         }
 
         // Stage all files before checking for uncommitted changes
         self.stage_files(repo_path);
 
         if !self.is_working_tree_clean(repo_path) {
-            println!(
-                "Skipping {} due to uncommitted changes before commit. Resolve manually.",
+            warn!(
+                "Skipping commit in '{}' due to uncommitted changes. Resolve manually.",
                 repo_path.display()
             );
             return;
         }
 
+        info!(
+            "Committing changes in '{}' with message: '{}'",
+            repo_path.display(),
+            user_message
+        );
+
         self.commit(repo_path, user_message);
     }
 
     fn create_or_switch_branch(&self, repo_path: &Path, branch_name: &str) -> bool {
+        info!(
+            "Ensuring repository '{}' is on the correct branch '{}'",
+            repo_path.display(),
+            branch_name
+        );
+
         // Ensure the repo is on a valid branch
         let head_output = Command::new("git")
             .current_dir(repo_path)
             .args(["symbolic-ref", "--short", "HEAD"])
             .output();
 
-        let current_branch = match head_output {
+        let _current_branch = match head_output {
             Ok(output) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout).trim().to_string()
+                let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                debug!(
+                    "Current branch in '{}': '{}'",
+                    repo_path.display(),
+                    branch
+                );
+                branch
             }
             _ => {
-                println!(
-                    "Skipping {}: Not on a valid branch or detached HEAD.",
+                warn!(
+                    "Skipping repository '{}': Not on a valid branch or in detached HEAD state.",
                     repo_path.display()
                 );
                 return false;
             }
         };
-
-        println!(
-            "Repository '{}' is currently on branch '{}'.",
-            repo_path.display(),
-            current_branch
-        );
 
         // Check if the target branch already exists
         let branch_exists = Command::new("git")
@@ -361,58 +446,97 @@ impl Repo {
             .unwrap_or(false);
 
         if !branch_exists {
-            println!("Creating and switching to branch '{}' in '{}'", branch_name, repo_path.display());
+            info!(
+                "Creating and switching to new branch '{}' in '{}'",
+                branch_name,
+                repo_path.display()
+            );
             let status = Command::new("git")
                 .current_dir(repo_path)
                 .args(["checkout", "-b", branch_name])
                 .status();
 
             if let Err(err) = status {
-                eprintln!("Error creating branch {}: {}", branch_name, err);
+                error!(
+                    "Error creating branch '{}' in '{}': {}",
+                    branch_name,
+                    repo_path.display(),
+                    err
+                );
                 return false;
             }
         } else {
-            println!("Switching to existing branch '{}' in '{}'", branch_name, repo_path.display());
+            info!(
+                "Switching to existing branch '{}' in '{}'",
+                branch_name,
+                repo_path.display()
+            );
             let status = Command::new("git")
                 .current_dir(repo_path)
                 .args(["checkout", branch_name])
                 .status();
 
             if let Err(err) = status {
-                eprintln!("Error switching to branch {}: {}", branch_name, err);
+                error!(
+                    "Error switching to branch '{}' in '{}': {}",
+                    branch_name,
+                    repo_path.display(),
+                    err
+                );
                 return false;
             }
         }
+
+        info!(
+            "Successfully switched to branch '{}' in '{}'",
+            branch_name,
+            repo_path.display()
+        );
 
         true
     }
 
     fn stage_files(&self, repo_path: &Path) -> bool {
+        info!("Staging all changes in repository '{}'", repo_path.display());
+
         let status = Command::new("git")
             .current_dir(repo_path)
             .args(["add", "."])
             .status();
 
-        if let Ok(status) = status {
-            if status.success() {
-                return true;
+        match status {
+            Ok(status) if status.success() => {
+                info!("Successfully staged changes in '{}'", repo_path.display());
+                true
             }
-            debug!("Git add failed.");
-        } else {
-            debug!("Git add command failed to execute.");
+            Ok(_) => {
+                warn!("Git add failed in '{}'", repo_path.display());
+                false
+            }
+            Err(e) => {
+                error!("Git add command failed to execute in '{}': {}", repo_path.display(), e);
+                false
+            }
         }
-
-        false
     }
 
     fn commit(&self, repo_path: &Path, user_message: &str) {
+        info!(
+            "Attempting to commit changes in repository '{}' with message '{}'",
+            repo_path.display(),
+            user_message
+        );
+
         let title = if user_message.is_empty() {
             "SLAM: Changes applied by slam".to_string()
         } else {
             format!("SLAM: {}", user_message)
         };
 
-        let commit_message = format!("{}\ndocs: https://github.com/scottidler/slam/blob/main/README.md", title);
+        let commit_message = format!(
+            "{}\ndocs: https://github.com/scottidler/slam/blob/main/README.md",
+            title
+        );
 
         let commit_output = Command::new("git")
             .current_dir(repo_path)
@@ -420,84 +544,137 @@ impl Repo {
             .output();
 
         match commit_output {
+            Ok(output) if output.status.success() => {
+                info!(
+                    "✅ Successfully committed changes in '{}':\n{}",
+                    repo_path.display(),
+                    String::from_utf8_lossy(&output.stdout)
+                );
+            }
             Ok(output) => {
-                if output.status.success() {
-                    println!(
-                        "✅ Successfully committed changes in '{}':\n{}",
-                        repo_path.display(),
-                        String::from_utf8_lossy(&output.stdout)
-                    );
-                } else {
-                    eprintln!(
-                        "❌ Failed to commit changes in '{}':\n{}",
-                        repo_path.display(),
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
+                warn!(
+                    "❌ Failed to commit changes in '{}':\n{}",
+                    repo_path.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
             }
             Err(e) => {
-                eprintln!("❌ Failed to execute git commit in '{}': {}", repo_path.display(), e);
+                error!(
+                    "❌ Failed to execute git commit in '{}': {}",
+                    repo_path.display(),
+                    e
+                );
             }
         }
     }
 }
 
 fn get_change(cli: &SlamCli) -> Option<Change> {
+    debug!("Parsing change arguments from CLI");
+
     if let Some(sub_args) = &cli.sub {
-        Some(Change::Sub(sub_args[0].clone(), sub_args[1].clone()))
-    } else if let Some(regex_args) = &cli.regex {
-        Some(Change::Regex(regex_args[0].clone(), regex_args[1].clone()))
-    } else {
-        None
+        info!(
+            "Using substring replacement: '{}' -> '{}'",
+            sub_args[0], sub_args[1]
+        );
+        return Some(Change::Sub(sub_args[0].clone(), sub_args[1].clone()));
     }
+
+    if let Some(regex_args) = &cli.regex {
+        info!(
+            "Using regex replacement: '{}' -> '{}'",
+            regex_args[0], regex_args[1]
+        );
+        return Some(Change::Regex(regex_args[0].clone(), regex_args[1].clone()));
+    }
+
+    debug!("No change argument provided");
+    None
 }
 
 fn create_repo(repo: &Path, root: &Path, change: &Option<Change>, files_pattern: &Option<String>) -> Option<Repo> {
-    if let Ok(relative_repo) = repo.strip_prefix(root) {
-        let reponame = relative_repo.display().to_string();
-        let mut files = Vec::new();
+    debug!("Creating repo entry for '{}'", repo.display());
 
-        if let Some(pattern) = files_pattern {
-            let matched_files = find_files_in_repo(repo, pattern).ok()?;
-            files.extend(
-                matched_files
-                    .into_iter()
-                    .map(|f| f.display().to_string())
-                    .collect::<Vec<_>>(),
-            );
-            files.sort();
-        }
-
-        if files_pattern.is_some() && files.is_empty() {
+    let relative_repo = match repo.strip_prefix(root) {
+        Ok(path) => path.display().to_string(),
+        Err(e) => {
+            warn!("Failed to strip prefix for '{}': {}", repo.display(), e);
             return None;
         }
+    };
 
+    let mut files = Vec::new();
+
+    if let Some(pattern) = files_pattern {
         debug!(
-            "Repository '{}' has {} matching files.",
-            reponame,
-            files.len()
+            "Searching for files matching '{}' in repository '{}'",
+            pattern, repo.display()
         );
 
-        Some(Repo {
-            reponame,
-            change: change.clone(),
-            files,
-        })
-    } else {
-        None
+        match find_files_in_repo(repo, pattern) {
+            Ok(matched_files) => {
+                files.extend(
+                    matched_files
+                        .into_iter()
+                        .map(|f| f.display().to_string())
+                        .collect::<Vec<_>>(),
+                );
+                files.sort();
+                info!(
+                    "Found {} matching files in repository '{}'",
+                    files.len(),
+                    repo.display()
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to find files in repository '{}': {}",
+                    repo.display(),
+                    e
+                );
+                return None;
+            }
+        }
     }
+
+    if files_pattern.is_some() && files.is_empty() {
+        debug!(
+            "Skipping repository '{}' as no files matched the pattern '{}'",
+            repo.display(),
+            files_pattern.as_deref().unwrap_or("None")
+        );
+        return None;
+    }
+
+    info!(
+        "Repository '{}' added with {} matching files.",
+        relative_repo,
+        files.len()
+    );
+
+    Some(Repo {
+        reponame: relative_repo,
+        change: change.clone(),
+        files,
+    })
 }
 
 fn main() -> Result<()> {
     env_logger::init();
+    info!("Starting SLAM");
 
     let cli = SlamCli::parse();
+    debug!("Parsed CLI arguments: {:?}", cli);
+
     let change = get_change(&cli);
+    debug!("Parsed change argument: {:?}", change);
 
     let root = env::current_dir().expect("Failed to get current directory");
     info!("Starting search in root directory: {}", root.display());
 
     let repos = find_git_repositories(&root)?;
+    info!("Found {} repositories", repos.len());
+
     let mut repo_list = Vec::new();
 
     for repo in repos {
@@ -508,13 +685,15 @@ fn main() -> Result<()> {
         }
     }
 
+    info!("Processing {} repositories", repo_list.len());
+
     if let Some(change) = &change {
         for repo in &repo_list {
             match change {
                 Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
                     if repo.output(&root, cli.commit.as_deref(), cli.buffer, &cli.branch) {
-                        println!(
-                            "Applying pattern '{}' with replacement '{}' in repo '{}'.",
+                        info!(
+                            "Applied pattern '{}' with replacement '{}' in repo '{}'.",
                             pattern, replacement, repo.reponame
                         );
                     }
@@ -524,47 +703,76 @@ fn main() -> Result<()> {
     } else if cli.files.is_some() {
         for repo in &repo_list {
             if !repo.files.is_empty() {
-                println!("{}", repo.reponame);
+                info!("Repo: {}", repo.reponame);
                 for file in &repo.files {
-                    println!("  {}", file);
+                    debug!("  File: {}", file);
                 }
             }
         }
     } else {
         for repo in &repo_list {
-            println!("{}", repo.reponame);
+            info!("Repo: {}", repo.reponame);
         }
     }
 
+    info!("SLAM execution complete.");
     Ok(())
 }
 
 fn find_git_repositories(root: &Path) -> Result<Vec<PathBuf>> {
+    info!("Searching for git repositories in '{}'", root.display());
+
     let mut repos = Vec::new();
+
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() && path.join(".git").is_dir() {
+            info!("Found git repository: '{}'", path.display());
             repos.push(path);
         } else if path.is_dir() {
-            repos.extend(find_git_repositories(&path)?);
+            debug!("Recursively searching in '{}'", path.display());
+            let nested_repos = find_git_repositories(&path)?;
+            repos.extend(nested_repos);
         }
     }
+
     repos.sort();
+    info!("Total repositories found: {}", repos.len());
+
     Ok(repos)
 }
 
 fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+    info!(
+        "Searching for files matching '{}' in repository '{}'",
+        pattern, repo.display()
+    );
+
     let mut matches = Vec::new();
     let search_pattern = repo.join(pattern).to_string_lossy().to_string();
 
-    debug!("Searching for files matching '{}' in '{}'", pattern, repo.display());
+    debug!("Using search pattern: '{}'", search_pattern);
 
     for entry in glob(&search_pattern)? {
-        if let Ok(path) = entry {
-            matches.push(path.strip_prefix(repo)?.to_path_buf());
+        match entry {
+            Ok(path) => {
+                let relative_path = path.strip_prefix(repo)?.to_path_buf();
+                debug!("Matched file: '{}'", relative_path.display());
+                matches.push(relative_path);
+            }
+            Err(e) => {
+                warn!("Failed to match file with pattern '{}': {}", search_pattern, e);
+            }
         }
     }
+
+    info!(
+        "Found {} matching files in repository '{}'",
+        matches.len(),
+        repo.display()
+    );
+
     Ok(matches)
 }
