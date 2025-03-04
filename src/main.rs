@@ -152,35 +152,31 @@ impl Repo {
     }
 
     fn is_working_tree_clean(&self, repo_path: &Path) -> bool {
-        info!("Checking if working tree is clean for '{}'", repo_path.display());
-
-        let output = Command::new("git")
+        let staged_clean = Command::new("git")
             .current_dir(repo_path)
-            .args(["status", "--porcelain"])
-            .output();
+            .args(["diff", "--cached", "--quiet"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-        match output {
-            Ok(output) => {
-                if output.stdout.is_empty() {
-                    info!("Repository '{}' is clean.", repo_path.display());
-                    true
-                } else {
-                    warn!(
-                        "Repository '{}' has uncommitted changes:\n{}",
-                        repo_path.display(),
-                        String::from_utf8_lossy(&output.stdout)
-                    );
-                    false
-                }
-            }
-            Err(e) => {
-                error!(
-                    "Failed to check working tree status in '{}': {}",
-                    repo_path.display(),
-                    e
-                );
-                false
-            }
+        let unstaged_clean = Command::new("git")
+            .current_dir(repo_path)
+            .args(["diff", "--quiet"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if staged_clean && unstaged_clean {
+            debug!("Working tree is clean in '{}'", repo_path.display());
+            true
+        } else {
+            warn!(
+                "Uncommitted changes found in '{}'. Staged: {}, Unstaged: {}",
+                repo_path.display(),
+                !staged_clean,
+                !unstaged_clean
+            );
+            false
         }
     }
 
