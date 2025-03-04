@@ -660,6 +660,11 @@ fn create_repo(repo: &Path, root: &Path, change: &Option<Change>, files_pattern:
 }
 
 fn main() -> Result<()> {
+    // Set default log level to INFO if RUST_LOG is not set
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info");
+    }
+
     env_logger::init();
     info!("Starting SLAM");
 
