@@ -1,0 +1,97 @@
+Below are a few ways you could design this, given the two-step process (slam create by User A, slam approve by User B), and each might work better depending on your environment constraints. In all cases, the high-level gist is:
+
+    slam create: Run locally, scanning for repos on disk, making changes, creating branches + PRs.
+    slam approve: Either:
+        Also run locally, scanning the same disk layout (but requiring local checkouts on User B’s machine).
+        Or run remotely, searching PRs on GitHub by branch name or other criteria, not relying on local .git checkouts.
+
+Below is an overview of these patterns and some specific “pros and cons” for each.
+1) Local Approach for Both create and approve
+
+Flow
+
+    User A clones all repos, runs slam create, which modifies code, commits, pushes to new branches, and creates PRs.
+    User B has the same local checkouts of these repos (or clones them). They run slam approve, scanning disk for .git folders, switching to the same “slam branch,” and running gh pr review --approve + gh pr merge.
+
+Pros
+
+    Consistent. slam approve uses the same local logic – scanning directories for .git.
+    You can see code changes locally at all times.
+
+Cons
+
+    Requires that User B also has the same repos cloned.
+    If your environment is large (hundreds of repos), replicating everything can be cumbersome.
+    Might fail if you try to do an operation (like git checkout <branch>) in repos that have not fetched or do not have that branch.
+
+What might be happening in your logs
+
+    The “No such file or directory” could happen if gh isn’t in the PATH or if some local directory is missing. Or, if you’re scanning .git directories that aren’t fully set up for that second user.
+
+2) Hybrid Approach: Local for create, Remote for approve
+
+Flow
+
+    User A still does the local “create.”
+    User B does not rely on local .git clones. Instead, slam approve queries GitHub by repo slug. For each repo, it runs commands like:
+        gh pr list --repo <owner>/<repo> --head <branch> --json number
+        gh pr review <PR> --approve --repo <owner>/<repo>
+        gh pr merge <PR> --repo <owner>/<repo> ...
+
+No file scanning or local branching is involved.
+
+Pros
+
+    User B only needs gh installed and an appropriate GitHub token/permissions.
+    No local clones needed for approval or merge.
+
+Cons
+
+    You need a way to figure out which repos to operate on. That might be:
+        A config file listing “owner/repo” pairs
+        A known org or group of repos you can iterate through via an API
+    Doesn’t automatically track local modifications. If you do want to see the changes locally, you must either clone or look at the PR diff on GitHub.
+
+Implementation Hints
+
+    Instead of scanning the filesystem for .git, you pass --repo <owner>/<repo> (or multiple) to your SlamCommand::Approve. For example:
+
+    slam approve --repo myorg/repo1 --repo myorg/repo2 --branch SLAM-2025-03-04
+
+    The code loops through each “repo slug” and calls gh pr list to find the PR. Then reviews and merges it.
+
+3) Searching GitHub for Branches (Remote Discovery)
+
+You mentioned scanning “remote repositories” for a matching branch. For example:
+
+    You know the branch name is SLAM-2025-03-04.
+    You want to find all repos in an organization that have an open PR with head:SLAM-2025-03-04.
+    You do something like:
+
+    gh search prs \
+        --state open \
+        --limit 1000 \
+        --owner myorg \
+        --head SLAM-2025-03-04 \
+        --json repository,number,url
+
+    Then for each returned PR, you do:
+        gh pr review <number> --approve --repo <owner>/<repo>
+        gh pr merge <number> --repo <owner>/<repo>
+
+That’s even more automated, if your GitHub CLI version supports gh search prs. This approach doesn’t require any local clones at all. It just scans the entire organization on GitHub for a branch name match.
+Recommendation
+
+Given the immediate problem (“We need two different users for create vs. approve”):
+
+    If you can ensure that the second user (approver) also has local clones, “Local Approach for Both” can still work, but you must fix the environment issues (e.g. they must have the same repo checkouts, a working gh in $PATH, the correct remote origin, etc.).
+    If you cannot or don’t want to replicate all repos for user B, do the “Hybrid/Remote Approach” for approving and merging.
+
+Scanning remote repos by branch is typically the simplest way for a second user to handle mass approvals, especially if they might not have those clones. That is the approach you’re hinting at: “scan all the remote repositories and search for branch names that match the default or given to slam approve.” Absolutely. You can do that via gh pr list or gh search prs.
+Final Thoughts
+
+    Decide if user B must or must not have local clones. If “must,” then fix your directory scanning/branch creation logic to ensure no missing files.
+    If “must not,” then skip local scanning. Let them pass --repo <owner>/<repo> or do a “org wide search” with gh search prs for the relevant branches to approve and merge.
+    If you prefer a middle ground, store the list of repos in some “slam.yaml” file. slam create uses that to apply local changes, slam approve uses that to approve & merge remotely.
+
+Either way, it’s absolutely valid to say: “One subcommand is local, the other subcommand is remote.” That is the typical scenario for a multi-user flow where only one user modifies the code locally, but a different user with higher privileges or a different account does the approvals.

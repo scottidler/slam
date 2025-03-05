@@ -105,6 +105,14 @@ enum SlamCommand {
         )]
         branch: String,
 
+        #[arg(
+            short = 'o',
+            long,
+            default_value = "tatari-tv",
+            help = "GitHub organization to search for branches"
+        )]
+        org: String,
+
         #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
         repos: Vec<String>,
     },
@@ -882,8 +890,8 @@ fn main() -> Result<()> {
         SlamCommand::Create { files, sub, regex, branch, buffer, commit, repos } => {
             process_create_command(files, sub, regex, branch, buffer, commit, repos)?;
         }
-        SlamCommand::Approve { branch, repos } => {
-            process_approve_command(branch, repos)?;
+        SlamCommand::Approve { branch, org, repos } => {
+            process_approve_command(branch, org, repos)?;
         }
     }
 
@@ -969,60 +977,106 @@ fn process_create_command(
     Ok(())
 }
 
-fn process_approve_command(branch: String, repos: Vec<String>) -> Result<()> {
-    let root = env::current_dir().expect("Failed to get current directory");
+fn process_approve_command(branch: String, org: String, repos: Vec<String>) -> Result<()> {
     info!(
-        "Approving and merging PRs in root directory: {} on branch '{}'",
-        root.display(),
-        branch
+        "Approving and merging PRs in GitHub organization '{}' for branch '{}'",
+        org, branch
     );
 
-    let found_repos = find_git_repositories(&root)?;
-    info!("Found {} repositories", found_repos.len());
+    // 1) Pull a list of repositories in the org *that contain a PR for `branch`*:
+    let discovered_repos = find_repos_in_org(&org, &branch)?;
+    info!("Discovered {} repos in org '{}' that have a PR for branch '{}'", discovered_repos.len(), org, branch);
 
-    let mut repo_list = Vec::new();
-    for repo in found_repos {
-        let relative_repo = repo
-            .strip_prefix(&root)
-            .unwrap_or(&repo)
-            .display()
-            .to_string();
+    // If user typed `slam approve -b SLAM-... -o someOrg somePartialRepoName`,
+    // then refine the discovered list to only those that match user filter:
+    let filtered_repos = if repos.is_empty() {
+        discovered_repos
+    } else {
+        discovered_repos
+            .into_iter()
+            .filter(|r| repos.iter().any(|user_arg| r.contains(user_arg)))
+            .collect()
+    };
+    info!("Filtered down to {} repositories for approval", filtered_repos.len());
 
-        if repos.is_empty() || repos.iter().any(|arg| relative_repo.contains(arg)) {
-            repo_list.push(Repo {
-                reponame: relative_repo,
-                change: None,
-                files: vec![],
-            });
-        }
-    }
+    // 2) Approve + merge for each filtered repo:
+    for repo_name in &filtered_repos {
+        info!("Approving/merging PR in remote repository '{}'", repo_name);
 
-    info!("Processing {} repositories for approval", repo_list.len());
+        // Approve:
+        let approve_status = Command::new("gh")
+            .args(["pr", "review", "--approve", "--repo", repo_name, "--branch", &branch])
+            .status();
 
-    for repo in &repo_list {
-        let repo_path = root.join(&repo.reponame);
-
-        // Switch to the specified branch (or create it if needed)
-        if !repo.create_or_switch_branch(&repo_path, &branch) {
-            warn!(
-                "Skipping approval for '{}' - failed to switch/create branch '{}'",
-                repo.reponame, branch
-            );
+        if let Err(err) = approve_status {
+            warn!("Failed to approve PR for '{}': {}", repo_name, err);
             continue;
         }
 
-        // Approve first
-        if repo.approve_pr(&repo_path) {
-            info!("PR approved for repo '{}'", repo.reponame);
+        // Merge:
+        let merge_status = Command::new("gh")
+            .args(["pr", "merge", "--admin", "--squash", "--delete-branch", "--repo", repo_name, "--branch", &branch])
+            .status();
 
-            // Then merge
-            if repo.merge_pr(&repo_path) {
-                info!("PR merged for repo '{}'", repo.reponame);
-            }
+        if let Err(err) = merge_status {
+            warn!("Failed to merge PR for '{}': {}", repo_name, err);
+        } else {
+            info!("Successfully merged branch '{}' in '{}'", branch, repo_name);
         }
     }
 
     Ok(())
+}
+
+fn find_repos_in_org(org: &str, branch: &str) -> Result<Vec<String>> {
+    // Step 1: List all repos in the org
+    let output = Command::new("gh")
+        .args(["repo", "list", org, "--limit", "100", "--json", "name"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(eyre::eyre!(
+            "Failed to list repos in org '{}': {}",
+            org,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    // JSON looks like [ { "name": "repo1" }, { "name": "repo2" }, ... ]
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout_str)?;
+
+    let mut repos = Vec::new();
+    if let Some(arr) = parsed.as_array() {
+        for obj in arr {
+            if let Some(repo_name) = obj.get("name").and_then(|n| n.as_str()) {
+                // e.g., "tatari-tv/myRepo" if org == tatari-tv
+                let full_repo = format!("{}/{}", org, repo_name);
+
+                // Step 2: Check if there's at least one open PR with head == branch
+                let pr_list = Command::new("gh")
+                    .args([
+                        "pr", "list",
+                        "--repo", &full_repo,
+                        "--head", branch,
+                        "--state", "open",
+                        "--json", "url",
+                    ])
+                    .output()?;
+
+                if pr_list.status.success() && !pr_list.stdout.is_empty() {
+                    // If GH found at least one open PR on `branch`, we keep this repo
+                    // (pr_list.stdout might be something like `[{ "url": "https://github.com/org/repo/pull/123" }]`)
+                    let body = String::from_utf8_lossy(&pr_list.stdout).trim().to_string();
+                    if body != "[]" {
+                        repos.push(full_repo);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(repos)
 }
 
 fn find_git_repositories(root: &Path) -> Result<Vec<PathBuf>> {
