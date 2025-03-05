@@ -1,3 +1,6 @@
+
+
+
 // src/main.rs
 
 use std::{
@@ -151,24 +154,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Helper to unify how we filter a list of repo names by user input.
-///
-/// - `candidates`: all candidate names or paths
-/// - `user_specs`: the list of user-provided filters (from the CLI). If empty, all candidates pass.
-/// - returns: filtered list of candidates that contain at least one user-specified filter substring.
-fn filter_repos_by_user_input(candidates: Vec<String>, user_specs: &[String]) -> Vec<String> {
-    if user_specs.is_empty() {
-        return candidates;
-    }
-    candidates
-        .into_iter()
-        .filter(|repo_name| {
-            user_specs.iter().any(|f| repo_name.contains(f))
-        })
-        .collect()
-}
-
-/// Helper to build a `Change` from the CLI arguments, if any.
+/// Constructs a `Change` from substring or regex arguments, if any.
 fn get_change(sub: &Option<Vec<String>>, regex: &Option<Vec<String>>) -> Option<Change> {
     if let Some(sub_args) = sub {
         info!(
@@ -188,6 +174,22 @@ fn get_change(sub: &Option<Vec<String>>, regex: &Option<Vec<String>>) -> Option<
     }
 }
 
+/// Filters a list of Repo objects by user-provided partial name matches.
+/// If `user_specs` is empty, all repos pass; otherwise, only keep repos
+/// whose name contains at least one of the user filters.
+fn filter_repo_objects_by_user_input(all_repos: Vec<Repo>, user_specs: &[String]) -> Vec<Repo> {
+    if user_specs.is_empty() {
+        return all_repos;
+    }
+
+    all_repos
+        .into_iter()
+        .filter(|repo| {
+            user_specs.iter().any(|user_filter| repo.reponame.contains(user_filter))
+        })
+        .collect()
+}
+
 /// Handles the `slam create` logic: discover local repos on disk, build `Repo` objects,
 /// filter them by user input, then optionally apply changes and commit/PR.
 fn process_create_command(
@@ -197,66 +199,55 @@ fn process_create_command(
     change_id: String,
     buffer: usize,
     commit: Option<String>,
-    repos: Vec<String>,
+    user_repo_specs: Vec<String>,
 ) -> Result<()> {
     let change = get_change(&sub, &regex);
 
     let root = env::current_dir()?;
     info!("Starting search in root directory: {}", root.display());
 
-    // Find local repos on disk (paths)
-    let found_repo_paths = find_git_repositories(&root)?;
-    info!("Found {} local repositories on disk", found_repo_paths.len());
+    // 1. Discover local `.git` repos from the filesystem
+    let discovered_paths = find_git_repositories(&root)?;
+    info!("Discovered {} local .git repos", discovered_paths.len());
 
-    // Convert to Repo objects. We'll store them in memory so we can filter by name.
-    let mut all_repos = Vec::new();
-    for repo_path in found_repo_paths {
-        if let Some(repo_obj) =
-            Repo::create_repo_from_local(&repo_path, &root, &change, &files, &change_id)
-        {
-            all_repos.push(repo_obj);
+    // 2. Construct `Repo` objects
+    let mut discovered_repos = Vec::new();
+    for path in discovered_paths {
+        if let Some(r) = Repo::create_repo_from_local(&path, &root, &change, &files, &change_id) {
+            discovered_repos.push(r);
         }
     }
     info!(
-        "Discovered {} valid local repos after patterns, prior to name filtering",
-        all_repos.len()
+        "Constructed {} Repo objects after file matching",
+        discovered_repos.len()
     );
 
-    // Filter by user-provided 'repos' if needed
-    // First, collect all reponames
-    let candidates: Vec<String> = all_repos.iter().map(|r| r.reponame.clone()).collect();
-    let filtered_repos = filter_repos_by_user_input(candidates, &repos);
+    // 3. Filter by user-supplied partial names (if any)
+    let filtered_repos = filter_repo_objects_by_user_input(discovered_repos, &user_repo_specs);
+    info!("Processing {} repositories for changes", filtered_repos.len());
 
-    // Then keep only the Repos that match
-    let repo_list: Vec<Repo> = all_repos
-        .into_iter()
-        .filter(|repo| filtered_repos.contains(&repo.reponame))
-        .collect();
-
-    info!("Processing {} repositories for changes", repo_list.len());
-
-    // If we have a change (substring or regex), apply it; otherwise, just list repos/files
-    if let Some(_ch) = &change {
-        for r in &repo_list {
-            let changes_made = r.output(&root, commit.as_deref(), buffer);
+    // 4. Apply changes or simply list the repos/files
+    if change.is_some() {
+        for filtered_repo in &filtered_repos {
+            let changes_made = filtered_repo.output(&root, commit.as_deref(), buffer);
             if changes_made {
-                debug!("Changes were applied in '{}'", r.reponame);
+                debug!("Changes applied in '{}'", filtered_repo.reponame);
             }
         }
     } else if files.is_some() {
-        // If user gave a files pattern, but no actual change, just show matched files
-        for r in &repo_list {
-            if !r.files.is_empty() {
-                info!("Repo: {}", r.reponame);
-                for file in &r.files {
+        // If user gave a files pattern but no actual change, just show matched files
+        for filtered_repo in &filtered_repos {
+            if !filtered_repo.files.is_empty() {
+                info!("Repo: {}", filtered_repo.reponame);
+                for file in &filtered_repo.files {
                     debug!("  Matched file: {}", file);
                 }
             }
         }
     } else {
         // No pattern or changes => just list repositories
-        for r in &repo_list {
-            info!("Repo: {}", r.reponame);
+        for filtered_repo in &filtered_repos {
+            info!("Repo: {}", filtered_repo.reponame);
         }
     }
 
@@ -267,39 +258,41 @@ fn process_create_command(
 /// matching `change_id`, filter by user input, then approve & merge.
 fn process_approve_command(change_id: String, org: String, user_repo_specs: Vec<String>) -> Result<()> {
     info!(
-        "Approving and merging PRs in GitHub organization '{}' for branch '{}'",
+        "Approving/merging PRs in GitHub organization '{}' for branch '{}'",
         org, change_id
     );
 
-    let discovered_repos = find_repos_in_org(&org, &change_id)?;
+    // 1. Discover remote repos that have an open PR with the given head branch
+    let discovered_names = find_repos_in_org(&org, &change_id)?;
     info!(
-        "Discovered {} repos in org '{}' that have an open PR for branch '{}'",
-        discovered_repos.len(),
-        org,
+        "Discovered {} remote repos with open PR branch '{}'",
+        discovered_names.len(),
         change_id
     );
 
-    // Filter if user specified any partial repo names
-    let filtered_repos = filter_repos_by_user_input(discovered_repos, &user_repo_specs);
+    // 2. Convert each "org/repo" string into a `Repo` object
+    let discovered_repos: Vec<Repo> = discovered_names
+        .into_iter()
+        .map(|name| Repo::create_repo_from_remote(&name, &change_id))
+        .collect();
+
+    // 3. Filter the Repo objects by user-supplied partial names
+    let filtered_repos = filter_repo_objects_by_user_input(discovered_repos, &user_repo_specs);
     info!(
-        "Filtered down to {} repositories to approve/merge",
+        "Filtered down to {} repositories for approval/merge",
         filtered_repos.len()
     );
 
-    // Approve & merge for each matching remote
-    for remote_name in filtered_repos {
-        let repo_obj = Repo::create_repo_from_remote(&remote_name, &change_id);
-
-        // Approve
-        if !repo_obj.approve_pr_remote() {
-            warn!("Failed to approve PR for '{}', skipping merge.", remote_name);
+    // 4. Approve & merge each matching repo
+    for filtered_repo in filtered_repos {
+        if !filtered_repo.approve_pr_remote() {
+            warn!("Failed to approve PR for '{}', skipping merge.", filtered_repo.reponame);
             continue;
         }
-        // Merge
-        if !repo_obj.merge_pr_remote() {
-            warn!("Failed to merge PR for '{}'.", remote_name);
+        if !filtered_repo.merge_pr_remote() {
+            warn!("Failed to merge PR for '{}'.", filtered_repo.reponame);
         } else {
-            info!("Successfully merged branch '{}' in '{}'", change_id, remote_name);
+            info!("Successfully merged branch '{}' in '{}'", change_id, filtered_repo.reponame);
         }
     }
 
@@ -326,14 +319,14 @@ fn find_repos_in_org(org: &str, change_id: &str) -> Result<Vec<String>> {
 
     let mut matching_repos = Vec::new();
 
-    // The JSON from `gh repo list --json name` is an array like:
+    // Example JSON from `gh repo list --json name`:
     // [ { "name": "repo1" }, { "name": "repo2" }, ... ]
-    if let Some(arr) = parsed.as_array() {
-        for obj in arr {
+    if let Some(array) = parsed.as_array() {
+        for obj in array {
             if let Some(repo_name) = obj.get("name").and_then(|n| n.as_str()) {
                 let full_repo = format!("{}/{}", org, repo_name);
 
-                // Now check if there's an open PR whose head is our `change_id`
+                // Check if there's an open PR whose head is our `change_id`
                 let pr_list = Command::new("gh")
                     .args([
                         "pr",
@@ -349,7 +342,7 @@ fn find_repos_in_org(org: &str, change_id: &str) -> Result<Vec<String>> {
                     ])
                     .output()?;
 
-                // If stdout is non-empty and not "[]", we found an open PR on that branch
+                // If stdout is non-empty and != "[]", we have an open PR on that branch
                 if pr_list.status.success() && !pr_list.stdout.is_empty() {
                     let body = String::from_utf8_lossy(&pr_list.stdout).trim().to_string();
                     if body != "[]" {
@@ -379,8 +372,8 @@ fn find_git_repositories(root: &Path) -> Result<Vec<PathBuf>> {
             repos.push(path);
         } else if path.is_dir() {
             // Recurse into subdirectories
-            let nested_repos = find_git_repositories(&path)?;
-            repos.extend(nested_repos);
+            let nested = find_git_repositories(&path)?;
+            repos.extend(nested);
         }
     }
 
