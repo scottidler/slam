@@ -16,13 +16,13 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
 }
 
-fn default_branch_name() -> String {
+fn default_change_id() -> String {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let branch_name = format!("SLAM-{}", date);
+    let change_id = format!("SLAM-{}", date);
 
-    debug!("Generated default branch name: {}", branch_name);
+    debug!("Generated default change_id: {}", change_id);
 
-    branch_name
+    change_id
 }
 
 #[derive(Debug, Clone)]
@@ -71,12 +71,12 @@ enum SlamCommand {
         regex: Option<Vec<String>>,
 
         #[arg(
-            short = 'b',
+            short = 'x',
             long,
-            help = "Branch to create and commit changes on (default: 'SLAM-<YYYY-MM-DD>')",
-            default_value_t = default_branch_name()
+            help = "Change ID uses to create branches and PRs (default: 'SLAM-<YYYY-MM-DD>')",
+            default_value_t = default_change_id()
         )]
-        branch: String,
+        change_id: String,
 
         #[arg(short = 'B', long, default_value_t = 1, help = "Number of context lines in the diff output")]
         buffer: usize,
@@ -94,16 +94,15 @@ enum SlamCommand {
         repos: Vec<String>,
     },
 
-    /// Approve and merge changes in repositories (alias: dunk) - Not yet implemented
     #[command(alias = "dunk")]
     Approve {
         #[arg(
-            short = 'b',
+            short = 'x',
             long,
-            help = "Branch to create and commit changes on (default: 'SLAM-<YYYY-MM-DD>')",
-            default_value_t = default_branch_name()
+            help = "Change ID used to find PRs to approve and merge (default: 'SLAM-<YYYY-MM-DD>')",
+            default_value_t = default_change_id()
         )]
-        branch: String,
+        change_id: String,
 
         #[arg(
             short = 'o',
@@ -125,15 +124,14 @@ struct Repo {
 }
 
 impl Repo {
-    fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize, branch_name: &str) -> bool {
+    fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize, change_id: &str) -> bool {
         let repo_path = root.join(&self.reponame);
         info!(
             "Processing repository '{}' at '{}'",
             self.reponame, repo_path.display()
         );
 
-        // Ensure we're on the correct branch BEFORE making modifications
-        if !self.create_or_switch_branch(&repo_path, branch_name) {
+        if !self.create_or_switch_branch(&repo_path, change_id) {
             warn!(
                 "Skipping '{}' due to branch switching failure.",
                 repo_path.display()
@@ -174,24 +172,15 @@ impl Repo {
                 repo_path.display(),
                 commit_msg
             );
-            self.commit_changes(&repo_path, commit_msg, branch_name);
+            self.commit_changes(&repo_path, commit_msg, change_id);
 
-            // Step 1: Push branch to remote
-            if !self.push_branch(&repo_path, branch_name) {
+            if !self.push_branch(&repo_path, change_id) {
                 warn!("Skipping PR creation due to push failure.");
                 return false;
             }
 
-            // Step 2: Create PR
-            if let Some(pr_url) = self.create_pr(&repo_path, branch_name) {
+            if let Some(pr_url) = self.create_pr(&repo_path, change_id) {
                 info!("PR created successfully: {}", pr_url);
-
-                // Step 3: Merge PR with admin rights
-                if self.merge_pr(&repo_path) {
-                    info!("PR merged successfully.");
-                } else {
-                    warn!("Failed to merge PR for repository '{}'", self.reponame);
-                }
             } else {
                 warn!("Failed to create PR for repository '{}'", self.reponame);
             }
@@ -372,15 +361,14 @@ impl Repo {
         result
     }
 
-    fn commit_changes(&self, repo_path: &Path, user_message: &str, branch_name: &str) {
+    fn commit_changes(&self, repo_path: &Path, user_message: &str, change_id: &str) {
         info!(
             "Attempting to commit changes in repository '{}' on branch '{}'",
             repo_path.display(),
-            branch_name
+            change_id
         );
 
-        // Ensure we're on the correct branch before committing
-        if !self.create_or_switch_branch(repo_path, branch_name) {
+        if !self.create_or_switch_branch(repo_path, change_id) {
             warn!(
                 "Skipping commit in '{}' due to branch switching failure.",
                 repo_path.display()
@@ -388,13 +376,11 @@ impl Repo {
             return;
         }
 
-        // Stage all changes
         if !self.stage_files(repo_path) {
             warn!("Skipping commit in '{}' due to failure in staging files.", repo_path.display());
             return;
         }
 
-        // Verify that we have staged changes and no uncommitted changes
         if self.is_working_tree_clean(repo_path) {
             warn!("Skipping commit in '{}' because there are no changes.", repo_path.display());
             return;
@@ -409,14 +395,13 @@ impl Repo {
         self.commit(repo_path, user_message);
     }
 
-    fn create_or_switch_branch(&self, repo_path: &Path, branch_name: &str) -> bool {
+    fn create_or_switch_branch(&self, repo_path: &Path, change_id: &str) -> bool {
         info!(
             "Ensuring repository '{}' is on the correct branch '{}'",
             repo_path.display(),
-            branch_name
+            change_id
         );
 
-        // Ensure the repo is on a valid branch
         let head_output = Command::new("git")
             .current_dir(repo_path)
             .args(["symbolic-ref", "--short", "HEAD"])
@@ -441,10 +426,9 @@ impl Repo {
             }
         };
 
-        // Check if the target branch already exists
         let branch_exists = Command::new("git")
             .current_dir(repo_path)
-            .args(["rev-parse", "--verify", branch_name])
+            .args(["rev-parse", "--verify", change_id])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -452,18 +436,18 @@ impl Repo {
         if !branch_exists {
             info!(
                 "Creating and switching to new branch '{}' in '{}'",
-                branch_name,
+                change_id,
                 repo_path.display()
             );
             let status = Command::new("git")
                 .current_dir(repo_path)
-                .args(["checkout", "-b", branch_name])
+                .args(["checkout", "-b", change_id])
                 .status();
 
             if let Err(err) = status {
                 error!(
                     "Error creating branch '{}' in '{}': {}",
-                    branch_name,
+                    change_id,
                     repo_path.display(),
                     err
                 );
@@ -472,18 +456,18 @@ impl Repo {
         } else {
             info!(
                 "Switching to existing branch '{}' in '{}'",
-                branch_name,
+                change_id,
                 repo_path.display()
             );
             let status = Command::new("git")
                 .current_dir(repo_path)
-                .args(["checkout", branch_name])
+                .args(["checkout", change_id])
                 .status();
 
             if let Err(err) = status {
                 error!(
                     "Error switching to branch '{}' in '{}': {}",
-                    branch_name,
+                    change_id,
                     repo_path.display(),
                     err
                 );
@@ -493,7 +477,7 @@ impl Repo {
 
         info!(
             "Successfully switched to branch '{}' in '{}'",
-            branch_name,
+            change_id,
             repo_path.display()
         );
 
@@ -587,25 +571,25 @@ impl Repo {
         }
     }
 
-    fn push_branch(&self, repo_path: &Path, branch_name: &str) -> bool {
-        info!("Pushing branch '{}' to remote in '{}'", branch_name, repo_path.display());
+    fn push_branch(&self, repo_path: &Path, change_id: &str) -> bool {
+        info!("Pushing branch '{}' to remote in '{}'", change_id, repo_path.display());
 
         let status = Command::new("git")
             .current_dir(repo_path)
-            .args(["push", "--set-upstream", "origin", branch_name])
+            .args(["push", "--set-upstream", "origin", change_id])
             .status();
 
         if let Err(err) = status {
-            error!("Failed to push branch '{}' in '{}': {}", branch_name, repo_path.display(), err);
+            error!("Failed to push branch '{}' in '{}': {}", change_id, repo_path.display(), err);
             return false;
         }
 
-        info!("Successfully pushed branch '{}' in '{}'", branch_name, repo_path.display());
+        info!("Successfully pushed branch '{}' in '{}'", change_id, repo_path.display());
         true
     }
 
-    fn create_pr(&self, repo_path: &Path, branch_name: &str) -> Option<String> {
-        info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), branch_name);
+    fn create_pr(&self, repo_path: &Path, change_id: &str) -> Option<String> {
+        info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), change_id);
 
         let pr_output = Command::new("gh")
             .current_dir(repo_path)
@@ -654,7 +638,6 @@ impl Repo {
     fn merge_pr(&self, repo_path: &Path) -> bool {
         info!("Merging pull request in '{}'", repo_path.display());
 
-        // Ensure the PR is approved before merging
         if !self.approve_pr(repo_path) {
             warn!("Skipping merge for '{}' due to approval failure.", repo_path.display());
             return false;
@@ -674,32 +657,7 @@ impl Repo {
         true
     }
 }
-/*
-fn get_change(command: &SlamCommand) -> Option<Change> {
-    debug!("Parsing change arguments from CLI");
 
-    if let SlamCommand::Create { sub, regex, .. } = command {
-        if let Some(sub_args) = sub {
-            info!(
-                "Using substring replacement: '{}' -> '{}'",
-                sub_args[0], sub_args[1]
-            );
-            return Some(Change::Sub(sub_args[0].clone(), sub_args[1].clone()));
-        }
-
-        if let Some(regex_args) = regex {
-            info!(
-                "Using regex replacement: '{}' -> '{}'",
-                regex_args[0], regex_args[1]
-            );
-            return Some(Change::Regex(regex_args[0].clone(), regex_args[1].clone()));
-        }
-    }
-
-    debug!("No change argument provided");
-    None
-}
-*/
 fn get_change(command: &SlamCommand) -> Option<Change> {
     debug!("Parsing change arguments from CLI");
 
@@ -791,9 +749,8 @@ fn create_repo(repo: &Path, root: &Path, change: &Option<Change>, files_pattern:
         files,
     })
 }
-/*
+
 fn main() -> Result<()> {
-    // Set default log level to INFO if RUST_LOG is not set
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info");
     }
@@ -805,93 +762,11 @@ fn main() -> Result<()> {
     debug!("Parsed CLI arguments: {:?}", cli);
 
     match cli.command {
-        SlamCommand::Create {
-            ref files,
-            sub: _,
-            regex: _,
-            ref branch,
-            buffer,
-            ref commit,
-            ref repos,
-        } => {
-            let change = get_change(&cli.command);
-
-            let root = env::current_dir().expect("Failed to get current directory");
-            info!("Starting search in root directory: {}", root.display());
-
-            let found_repos = find_git_repositories(&root)?;
-            info!("Found {} repositories", found_repos.len());
-
-            let mut repo_list = Vec::new();
-
-            for repo in found_repos {
-                if let Some(repo_entry) = create_repo(&repo, &root, &change, &files) {
-                    if repos.is_empty() || repos.iter().any(|arg| repo_entry.reponame.contains(arg)) {
-                        repo_list.push(repo_entry);
-                    }
-                }
-            }
-
-            info!("Processing {} repositories", repo_list.len());
-
-            if let Some(change) = &change {
-                for repo in &repo_list {
-                    match change {
-                        Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
-                            if repo.output(&root, commit.as_deref(), buffer, &branch) {
-                                info!(
-                                    "Applied pattern '{}' with replacement '{}' in repo '{}'.",
-                                    pattern, replacement, repo.reponame
-                                );
-                            }
-                        }
-                    }
-                }
-            } else if files.is_some() {
-                for repo in &repo_list {
-                    if !repo.files.is_empty() {
-                        info!("Repo: {}", repo.reponame);
-                        for file in &repo.files {
-                            debug!("  File: {}", file);
-                        }
-                    }
-                }
-            } else {
-                for repo in &repo_list {
-                    info!("Repo: {}", repo.reponame);
-                }
-            }
+        SlamCommand::Create { files, sub, regex, change_id, buffer, commit, repos } => {
+            process_create_command(files, sub, regex, change_id, buffer, commit, repos)?;
         }
-
-        SlamCommand::Approve { .. } => {
-            // Stub - Not Implemented
-            warn!("Approve (dunk) is not yet implemented.");
-        }
-    }
-
-    info!("SLAM execution complete.");
-    Ok(())
-}
-*/
-
-fn main() -> Result<()> {
-    // Set default log level to INFO if RUST_LOG is not set
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "info");
-    }
-
-    env_logger::init();
-    info!("Starting SLAM");
-
-    let cli = SlamCli::parse();
-    debug!("Parsed CLI arguments: {:?}", cli);
-
-    match cli.command {
-        SlamCommand::Create { files, sub, regex, branch, buffer, commit, repos } => {
-            process_create_command(files, sub, regex, branch, buffer, commit, repos)?;
-        }
-        SlamCommand::Approve { branch, org, repos } => {
-            process_approve_command(branch, org, repos)?;
+        SlamCommand::Approve { change_id, org, repos } => {
+            process_approve_command(change_id, org, repos)?;
         }
     }
 
@@ -903,23 +778,21 @@ fn process_create_command(
     files: Option<String>,
     sub: Option<Vec<String>>,
     regex: Option<Vec<String>>,
-    branch: String,
+    change_id: String,
     buffer: usize,
     commit: Option<String>,
     repos: Vec<String>,
 ) -> Result<()> {
-    // Recreate the SlamCommand so we can call get_change
     let command = SlamCommand::Create {
         files: files.clone(),
         sub: sub.clone(),
         regex: regex.clone(),
-        branch: branch.clone(),
+        change_id: change_id.clone(),
         buffer,
         commit: commit.clone(),
         repos: repos.clone(),
     };
 
-    // Now call get_change
     let change = get_change(&command);
 
     let root = env::current_dir().expect("Failed to get current directory");
@@ -931,7 +804,6 @@ fn process_create_command(
     let mut repo_list = Vec::new();
     for repo in found_repos {
         if let Some(repo_entry) = create_repo(&repo, &root, &change, &files) {
-            // Only include repos if user didn't filter, or if name matches
             if repos.is_empty() || repos.iter().any(|arg| repo_entry.reponame.contains(arg)) {
                 repo_list.push(repo_entry);
             }
@@ -940,13 +812,11 @@ fn process_create_command(
 
     info!("Processing {} repositories", repo_list.len());
 
-    // If we do have a change to apply...
     if let Some(change) = &change {
         for repo in &repo_list {
-            // Either Sub or Regex
             match change {
                 Change::Sub(pattern, replacement) | Change::Regex(pattern, replacement) => {
-                    if repo.output(&root, commit.as_deref(), buffer, &branch) {
+                    if repo.output(&root, commit.as_deref(), buffer, &change_id) {
                         info!(
                             "Applied pattern '{}' with replacement '{}' in repo '{}'.",
                             pattern, replacement, repo.reponame
@@ -956,7 +826,6 @@ fn process_create_command(
             }
         }
     }
-    // No changes, but we do have a file pattern. Just list matched files.
     else if files.is_some() {
         for repo in &repo_list {
             if !repo.files.is_empty() {
@@ -967,7 +836,6 @@ fn process_create_command(
             }
         }
     }
-    // No changes and no file pattern => Just list repos
     else {
         for repo in &repo_list {
             info!("Repo: {}", repo.reponame);
@@ -977,18 +845,15 @@ fn process_create_command(
     Ok(())
 }
 
-fn process_approve_command(branch: String, org: String, repos: Vec<String>) -> Result<()> {
+fn process_approve_command(change_id: String, org: String, repos: Vec<String>) -> Result<()> {
     info!(
         "Approving and merging PRs in GitHub organization '{}' for branch '{}'",
-        org, branch
+        org, change_id
     );
 
-    // 1) Pull a list of repositories in the org *that contain a PR for `branch`*:
-    let discovered_repos = find_repos_in_org(&org, &branch)?;
-    info!("Discovered {} repos in org '{}' that have a PR for branch '{}'", discovered_repos.len(), org, branch);
+    let discovered_repos = find_repos_in_org(&org, &change_id)?;
+    info!("Discovered {} repos in org '{}' that have a PR for branch '{}'", discovered_repos.len(), org, change_id);
 
-    // If user typed `slam approve -b SLAM-... -o someOrg somePartialRepoName`,
-    // then refine the discovered list to only those that match user filter:
     let filtered_repos = if repos.is_empty() {
         discovered_repos
     } else {
@@ -999,13 +864,11 @@ fn process_approve_command(branch: String, org: String, repos: Vec<String>) -> R
     };
     info!("Filtered down to {} repositories for approval", filtered_repos.len());
 
-    // 2) Approve + merge for each filtered repo:
     for repo_name in &filtered_repos {
         info!("Approving/merging PR in remote repository '{}'", repo_name);
 
-        // Approve:
         let approve_status = Command::new("gh")
-            .args(["pr", "review", "--approve", "--repo", repo_name, "--branch", &branch])
+            .args(["pr", "review", "--approve", "--repo", repo_name, "--branch", &change_id])
             .status();
 
         if let Err(err) = approve_status {
@@ -1013,23 +876,21 @@ fn process_approve_command(branch: String, org: String, repos: Vec<String>) -> R
             continue;
         }
 
-        // Merge:
         let merge_status = Command::new("gh")
-            .args(["pr", "merge", "--admin", "--squash", "--delete-branch", "--repo", repo_name, "--branch", &branch])
+            .args(["pr", "merge", "--admin", "--squash", "--delete-branch", "--repo", repo_name, "--branch", &change_id])
             .status();
 
         if let Err(err) = merge_status {
             warn!("Failed to merge PR for '{}': {}", repo_name, err);
         } else {
-            info!("Successfully merged branch '{}' in '{}'", branch, repo_name);
+            info!("Successfully merged branch '{}' in '{}'", change_id, repo_name);
         }
     }
 
     Ok(())
 }
 
-fn find_repos_in_org(org: &str, branch: &str) -> Result<Vec<String>> {
-    // Step 1: List all repos in the org
+fn find_repos_in_org(org: &str, change_id: &str) -> Result<Vec<String>> {
     let output = Command::new("gh")
         .args(["repo", "list", org, "--limit", "100", "--json", "name"])
         .output()?;
@@ -1050,23 +911,19 @@ fn find_repos_in_org(org: &str, branch: &str) -> Result<Vec<String>> {
     if let Some(arr) = parsed.as_array() {
         for obj in arr {
             if let Some(repo_name) = obj.get("name").and_then(|n| n.as_str()) {
-                // e.g., "tatari-tv/myRepo" if org == tatari-tv
                 let full_repo = format!("{}/{}", org, repo_name);
 
-                // Step 2: Check if there's at least one open PR with head == branch
                 let pr_list = Command::new("gh")
                     .args([
                         "pr", "list",
                         "--repo", &full_repo,
-                        "--head", branch,
+                        "--head", change_id,
                         "--state", "open",
                         "--json", "url",
                     ])
                     .output()?;
 
                 if pr_list.status.success() && !pr_list.stdout.is_empty() {
-                    // If GH found at least one open PR on `branch`, we keep this repo
-                    // (pr_list.stdout might be something like `[{ "url": "https://github.com/org/repo/pull/123" }]`)
                     let body = String::from_utf8_lossy(&pr_list.stdout).trim().to_string();
                     if body != "[]" {
                         repos.push(full_repo);
