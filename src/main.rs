@@ -1,6 +1,3 @@
-
-
-
 // src/main.rs
 
 use std::{
@@ -10,7 +7,7 @@ use std::{
     process::Command,
 };
 
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
 use eyre::Result;
 use log::{debug, info, warn};
 use serde_json::Value;
@@ -118,13 +115,57 @@ enum SlamCommand {
     },
 }
 
+// 1) A helper function that checks `git` and `gh` availability/versions.
+//    Returns a multi-line String that will be appended to help text.
+fn get_cli_tool_status() -> String {
+    use std::process::Command;
+
+    let ok_mark = "✅";
+    let fail_mark = "❌";
+    let tools = [
+        ("git", &["--version"]),
+        ("gh", &["--version"]),
+    ];
+
+    let mut output_string = String::new();
+    output_string.push('\n');
+    for (tool_bin, args) in &tools {
+        match Command::new(tool_bin).args(args.iter()).output() {
+            Ok(cmd_output) if cmd_output.status.success() => {
+                let stdout = String::from_utf8_lossy(&cmd_output.stdout);
+                let version_line = stdout.lines().next().unwrap_or("Unknown Version");
+                output_string.push_str(&format!(
+                    "{} {} {}\n",
+                    ok_mark, tool_bin, version_line.trim()
+                ));
+            }
+            _ => {
+                output_string.push_str(&format!(
+                    "{} {} (missing or broken)\n",
+                    fail_mark, tool_bin
+                ));
+            }
+        }
+    }
+    output_string.push('\n');
+    output_string
+}
+
 fn main() -> Result<()> {
     // Set default log level if not already set
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
-    let cli = SlamCli::parse();
+    // Build the Clap command from your parser-deriving struct (whatever you call it).
+    let mut cmd = SlamCli::command();
+
+    // Insert dynamic after_help content here. Clap will automatically show it below
+    // the main help text when the user does `--help`.
+    cmd = cmd.after_help(get_cli_tool_status());
+
+    // If you have a Parser-derived struct named `SlamCli`, parse it like this:
+    let cli = SlamCli::from_arg_matches(&cmd.get_matches())?;
     info!("Starting SLAM");
     debug!("Parsed CLI arguments: {:?}", cli);
 
