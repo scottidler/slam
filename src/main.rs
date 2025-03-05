@@ -124,9 +124,8 @@ fn main() -> Result<()> {
         env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
-
-    info!("Starting SLAM");
     let cli = SlamCli::parse();
+    info!("Starting SLAM");
     debug!("Parsed CLI arguments: {:?}", cli);
 
     match cli.command {
