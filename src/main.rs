@@ -3,14 +3,18 @@
 use std::{
     env,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
 
 use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
-use eyre::Result;
-use log::{debug, info, warn};
-use serde_json::Value;
+use eyre::{eyre, Result};
+use log::{debug, info, warn, LevelFilter};
+use serde_json::{from_str, Value};
+use env_logger::Target;
+use rayon::prelude::*;
+
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
@@ -75,7 +79,12 @@ enum SlamCommand {
         )]
         change_id: String,
 
-        #[arg(short = 'B', long, default_value_t = 1, help = "Number of context lines in the diff output")]
+        #[arg(
+            short = 'b',
+            long,
+            default_value_t = 1,
+            help = "Number of context lines in the diff output"
+        )]
         buffer: usize,
 
         #[arg(
@@ -128,9 +137,9 @@ enum SlamCommand {
         admin_override: bool,
 
         #[arg(
-            short = 'B',
+            short = 'b',
             long,
-            default_value_t = 3,
+            default_value_t = 1,
             help = "Number of context lines in the diff output"
         )]
         buffer: usize,
@@ -143,10 +152,9 @@ enum SlamCommand {
 // 1) A helper function that checks `git` and `gh` availability/versions.
 //    Returns a multi-line String that will be appended to help text.
 fn get_cli_tool_status() -> String {
-    use std::process::Command;
 
-    let ok_mark = "✅";
-    let fail_mark = "❌";
+    let success = "✅";
+    let failure = "❌";
     let tools = [
         ("git", &["--version"]),
         ("gh", &["--version"]),
@@ -161,13 +169,13 @@ fn get_cli_tool_status() -> String {
                 let version_line = stdout.lines().next().unwrap_or("Unknown Version");
                 output_string.push_str(&format!(
                     "{} {} {}\n",
-                    ok_mark, tool_bin, version_line.trim()
+                    success, tool_bin, version_line.trim()
                 ));
             }
             _ => {
                 output_string.push_str(&format!(
                     "{} {} (missing or broken)\n",
-                    fail_mark, tool_bin
+                    failure, tool_bin
                 ));
             }
         }
@@ -181,15 +189,31 @@ fn main() -> Result<()> {
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info");
     }
-    env_logger::init();
-    // Build the Clap command from your parser-deriving struct (whatever you call it).
-    let mut cmd = SlamCli::command();
 
-    // Insert dynamic after_help content here. Clap will automatically show it below
-    // the main help text when the user does `--help`.
+    fs::create_dir_all("/var/log/messages/slam")?;
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/messages/slam/slam.log")
+        .expect("Failed to open /var/log/messages/slam/slam.log");
+
+    env_logger::Builder::new()
+        .filter_level(LevelFilter::Info)
+        .target(Target::Pipe(Box::new(log_file)))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{level}] {timestamp} - {msg}",
+                level = record.level(),
+                timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                msg = record.args()
+            )
+        })
+        .init();
+
+    let mut cmd = SlamCli::command();
     cmd = cmd.after_help(get_cli_tool_status());
 
-    // If you have a Parser-derived struct named `SlamCli`, parse it like this:
     let cli = SlamCli::from_arg_matches(&cmd.get_matches())?;
     info!("Starting SLAM");
     debug!("Parsed CLI arguments: {:?}", cli);
@@ -207,9 +231,6 @@ fn main() -> Result<()> {
             process_create_command(files, sub, regex, change_id, buffer, commit, repos)?;
         }
         SlamCommand::Review {
-            //change_id,
-            //org,
-            //repos,
             change_id,
             org,
             approve,
@@ -218,7 +239,6 @@ fn main() -> Result<()> {
             buffer,
             repos,
         } => {
-            //process_review_command(change_id, org, repos)?;
             process_review_command(change_id, org, approve, merge, admin_override, buffer, repos)?;
         }
     }
@@ -334,194 +354,132 @@ fn process_review_command(
     merge: bool,
     admin_override: bool,
     buffer: usize,
-    user_repo_specs: Vec<String>
+    user_repo_specs: Vec<String>,
 ) -> Result<()> {
-    info!(
-        "Showing diffs in GitHub organization '{}' for branch '{}'. Approve={}, Merge={}, Admin={}",
-        org, change_id, approve, merge, admin_override
-    );
+    // A) gather all repos in the org
+    let repo_names = find_repos_in_org(&org)?;
+    info!("Found {} repos in '{}'", repo_names.len(), org);
 
-    // 1. Discover remote repos that have an open PR with the given head branch
-    let discovered_names = find_repos_in_org(&org, &change_id)?;
-    info!(
-        "Discovered {} remote repos with open PR branch '{}'",
-        discovered_names.len(),
-        change_id
-    );
-
-    // 2. Convert each "org/repo" string into a `Repo` object
-    let discovered_repos: Vec<Repo> = discovered_names
+    // B) filter by user input.
+    //    If you have a function that works on strings instead of Repos, do that:
+    let filtered_names: Vec<_> = repo_names
         .into_iter()
-        .map(|name| Repo::create_repo_from_remote(&name, &change_id))
+        .filter(|full_name| {
+            // your old "any(|uf| full_name.contains(uf))" logic,
+            // or if user_repo_specs is empty => keep them all
+            user_repo_specs.is_empty()
+                || user_repo_specs.iter().any(|pat| full_name.contains(pat))
+        })
         .collect();
-
-    // 3. Filter the Repo objects by user-supplied partial names
-    let filtered_repos = filter_repo_objects_by_user_input(discovered_repos, &user_repo_specs);
     info!(
-        "Filtered down to {} repositories for approval/merge",
-        filtered_repos.len()
+        "After user input filter, {} remain",
+        filtered_names.len()
     );
 
-    for filtered_repo in filtered_repos {
-        // a) fetch PR number
-        let pr_number = match get_pr_number_for_branch(&filtered_repo.reponame, &change_id) {
-            Some(num) => num,
-            None => { /* skip, no open PR found */ continue; }
-        };
-
-        // b) fetch & parse the diff
-        let diff_text = match get_pr_diff(&filtered_repo.reponame, pr_number) {
-            Ok(txt) => txt,
-            Err(_e) => { /* skip, can't fetch diff */ continue; }
-        };
-        let file_patches = parse_unified_diff(&diff_text);
-
-        // c) show diffs
-        if !file_patches.is_empty() {
-            println!("Repo: {}", filtered_repo.reponame);
-            for (filename, old_text, new_text) in file_patches {
-                println!("  Modified file: {}", filename);
-                // Need `pub fn generate_diff` in `repo.rs`
-                let short_diff = filtered_repo.generate_diff(&old_text, &new_text, buffer);
-                for line in short_diff.lines() {
-                    println!("    {}", line);
-                }
-            }
-        }
-
-        // d) Approve only if user wants
-        if approve {
-            if !filtered_repo.approve_pr_remote() {
-                warn!(
-                    "Failed to approve PR for '{}', skipping merge.",
-                    filtered_repo.reponame
-                );
-                continue;
-            }
-        } else {
-            // If user isn't approving, skip merging too
-            info!("User did not request --approve, skipping actual PR approval/merge.");
-            continue;
-        }
-
-        // e) Merge only if user wants
-        if merge {
-            let merged = filtered_repo.merge_pr_remote(admin_override);
-            if !merged {
-                warn!("Failed to merge PR for '{}'.", filtered_repo.reponame);
+    // C) In parallel, find who has an open PR on change_id.
+    //    For each matching repo, we build a Repo struct with pr_number.
+    let filtered_repos: Vec<Repo> = filtered_names
+        .par_iter()
+        .filter_map(|name| {
+            let pr_number = get_pr_number_for_repo(name, &change_id);
+            if pr_number == 0 {
+                // no open PR => skip
+                None
             } else {
-                info!("Successfully merged branch '{}' in '{}'", change_id, filtered_repo.reponame);
+                // build the real Repo
+                Some(Repo::create_repo_from_remote_with_pr(name, &change_id, pr_number))
             }
-        } else {
-            info!("User did not request --merge, skipping merging step.");
-        }
-    }
+        })
+        .collect();
 
-    Ok(())
-}
-
-/*
-/// Handles the `slam review` logic: discover remote repos in a given org that have a PR
-/// matching `change_id`, filter by user input, then approve & merge.
-fn process_review_command(change_id: String, org: String, user_repo_specs: Vec<String>) -> Result<()> {
     info!(
-        "Approving/merging PRs in GitHub organization '{}' for branch '{}'",
-        org, change_id
-    );
-
-    // 1. Discover remote repos that have an open PR with the given head branch
-    let discovered_names = find_repos_in_org(&org, &change_id)?;
-    info!(
-        "Discovered {} remote repos with open PR branch '{}'",
-        discovered_names.len(),
+        "{} repos actually have an open PR for branch '{}'",
+        filtered_repos.len(),
         change_id
     );
 
-    // 2. Convert each "org/repo" string into a `Repo` object
-    let discovered_repos: Vec<Repo> = discovered_names
-        .into_iter()
-        .map(|name| Repo::create_repo_from_remote(&name, &change_id))
-        .collect();
+    // D) For each final repo => show diffs, optionally approve/merge
+    for filtred_repo in &filtered_repos {
+        // show diffs
+        show_repo_diff(filtred_repo, buffer);
 
-    // 3. Filter the Repo objects by user-supplied partial names
-    let filtered_repos = filter_repo_objects_by_user_input(discovered_repos, &user_repo_specs);
-    info!(
-        "Filtered down to {} repositories for approval/merge",
-        filtered_repos.len()
-    );
-
-    // 4. Approve & merge each matching repo
-    for filtered_repo in filtered_repos {
-        if !filtered_repo.approve_pr_remote() {
-            warn!("Failed to approve PR for '{}', skipping merge.", filtered_repo.reponame);
+        // if not approving => skip merge
+        if !approve {
+            info!("No --approve, skipping '{}'", filtred_repo.reponame);
             continue;
         }
-        if !filtered_repo.merge_pr_remote() {
-            warn!("Failed to merge PR for '{}'.", filtered_repo.reponame);
+        if !filtred_repo.approve_pr_remote() {
+            warn!("Failed to approve PR for '{}', skipping merge", filtred_repo.reponame);
+            continue;
+        }
+
+        // if not merging => done
+        if !merge {
+            info!("No --merge, skipping '{}'", filtred_repo.reponame);
+            continue;
+        }
+        let merged = filtred_repo.merge_pr_remote(admin_override);
+        if !merged {
+            warn!("Failed to merge PR for '{}'", filtred_repo.reponame);
         } else {
-            info!("Successfully merged branch '{}' in '{}'", change_id, filtered_repo.reponame);
+            info!("Successfully merged {}", filtred_repo.reponame);
         }
     }
 
     Ok(())
 }
-*/
 
-/// Uses `gh repo list` to find all repos in a GitHub organization, then checks if each repo
-/// has an open PR whose head is `change_id`. Returns a list of all matching `org/repo` names.
-fn find_repos_in_org(org: &str, change_id: &str) -> Result<Vec<String>> {
-    let output = Command::new("gh")
-        .args(["repo", "list", org, "--limit", "100", "--json", "name"])
+fn show_repo_diff(repo: &Repo, buffer: usize) {
+    // 1) fetch the patch
+    let diff_text = match get_pr_diff(&repo.reponame, repo.pr_number) {
+        Ok(txt) => txt,
+        Err(e) => {
+            warn!("Could not fetch PR diff for '{}': {}", repo.reponame, e);
+            return;
+        }
+    };
+    // 2) parse
+    let file_patches = parse_unified_diff(&diff_text);
+    if file_patches.is_empty() {
+        return;
+    }
+
+    // 3) show diffs
+    println!("Repo: {}", repo.reponame);
+    for (filename, old_text, new_text) in file_patches {
+        println!("  Modified file: {}", filename);
+        let short_diff = repo.generate_diff(&old_text, &new_text, buffer);
+        for line in short_diff.lines() {
+            println!("    {}", line);
+        }
+    }
+}
+
+fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
+    // Use a high limit (e.g. 1000) to fetch all repos.
+    let output = std::process::Command::new("gh")
+        .args(&["repo", "list", org, "--limit", "1000", "--json", "name"])
         .output()?;
 
     if !output.status.success() {
-        return Err(eyre::eyre!(
-            "Failed to list repos in org '{}': {}",
-            org,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("Failed to list repos in org '{}': {}", org, stderr.trim()));
     }
 
     let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(&stdout_str)?;
+    let parsed: Value = from_str(&stdout_str)?;
 
-    let mut matching_repos = Vec::new();
-
-    // Example JSON from `gh repo list --json name`:
-    // [ { "name": "repo1" }, { "name": "repo2" }, ... ]
-    if let Some(array) = parsed.as_array() {
-        for obj in array {
-            if let Some(repo_name) = obj.get("name").and_then(|n| n.as_str()) {
-                let full_repo = format!("{}/{}", org, repo_name);
-
-                // Check if there's an open PR whose head is our `change_id`
-                let pr_list = Command::new("gh")
-                    .args([
-                        "pr",
-                        "list",
-                        "--repo",
-                        &full_repo,
-                        "--head",
-                        change_id,
-                        "--state",
-                        "open",
-                        "--json",
-                        "url",
-                    ])
-                    .output()?;
-
-                // If stdout is non-empty and != "[]", we have an open PR on that branch
-                if pr_list.status.success() && !pr_list.stdout.is_empty() {
-                    let body = String::from_utf8_lossy(&pr_list.stdout).trim().to_string();
-                    if body != "[]" {
-                        matching_repos.push(full_repo);
-                    }
-                }
+    let mut repo_names = Vec::new();
+    if let Some(arr) = parsed.as_array() {
+        for obj in arr {
+            if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                // Construct the full repo name as "org/name"
+                repo_names.push(format!("{}/{}", org, name));
             }
         }
     }
 
-    Ok(matching_repos)
+    Ok(repo_names)
 }
 
 /// Recursively looks for directories containing a `.git` folder.
@@ -549,11 +507,6 @@ fn find_git_repositories(root: &Path) -> Result<Vec<PathBuf>> {
     info!("Total local repositories found: {}", repos.len());
     Ok(repos)
 }
-
-
-
-
-
 
 /// Holds the before/after text for a single modified file.
 #[derive(Debug)]
@@ -620,36 +573,40 @@ fn parse_unified_diff(diff_text: &str) -> Vec<(String, String, String)> {
     result
 }
 
-fn get_pr_number_for_branch(repo: &str, branch: &str) -> Option<u64> {
+fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> u64 {
     use std::process::Command;
 
     let output = Command::new("gh")
         .args([
             "pr", "list",
-            "--repo", repo,
-            "--head", branch,
+            "--repo", repo_name,
+            "--head", change_id,
             "--state", "open",
             "--json", "number",
             "--limit", "1",
         ])
-        .output()
-        .ok()?;
+        .output();
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout_str).ok()?;
-    let arr = v.as_array()?;
-    if let Some(obj) = arr.first() {
-        obj.get("number").and_then(|n| n.as_u64())
-    } else {
-        None
+    match output {
+        Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+            // e.g. `[ { "number": 123 } ]`
+            let stdout_str = String::from_utf8_lossy(&o.stdout);
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
+                if let Some(arr) = json_val.as_array() {
+                    if let Some(first) = arr.first() {
+                        if let Some(num) = first.get("number").and_then(|v| v.as_u64()) {
+                            return num;
+                        }
+                    }
+                }
+            }
+            0
+        }
+        _ => 0,
     }
 }
 
-fn get_pr_diff(repo: &str, pr_number: u64) -> eyre::Result<String> {
+fn get_pr_diff(repo: &str, pr_number: u64) -> Result<String> {
     use std::process::Command;
 
     let output = Command::new("gh")
@@ -658,7 +615,7 @@ fn get_pr_diff(repo: &str, pr_number: u64) -> eyre::Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(eyre::eyre!("gh pr diff command failed: {}", stderr.trim()))
+        Err(eyre!("gh pr diff command failed: {}", stderr.trim()))
     } else {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }

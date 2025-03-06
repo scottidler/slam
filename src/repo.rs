@@ -24,6 +24,7 @@ pub struct Repo {
     pub change_id: String,
     pub change: Option<Change>,
     pub files: Vec<String>,
+    pub pr_number: u64,
 }
 
 impl Repo {
@@ -108,7 +109,8 @@ impl Repo {
             reponame: relative_repo,
             change_id: change_id.to_string(),
             change: change.clone(),
-            files,
+            files: files,
+            pr_number: 0,
         })
     }
 
@@ -118,12 +120,24 @@ impl Repo {
     ///
     /// - `remote_reponame`: e.g. "my-org/my-repo"
     /// - `change_id`: the branch/PR to focus on
+    /*
     pub fn create_repo_from_remote(remote_reponame: &str, change_id: &str) -> Repo {
         Repo {
             reponame: remote_reponame.to_owned(),
             change_id: change_id.to_owned(),
             change: None,
             files: Vec::new(),
+        }
+    }
+    */
+
+    pub fn create_repo_from_remote_with_pr(repo_name: &str, change_id: &str, pr_number: u64) -> Self {
+        Repo {
+            reponame: repo_name.to_owned(),
+            change_id: change_id.to_owned(),
+            change: None,
+            files: Vec::new(),
+            pr_number,
         }
     }
 
@@ -295,82 +309,6 @@ impl Repo {
         Some(diff)
     }
 
-/*
-    /// Performs the entire "apply changes, optionally commit, push, create PR" sequence for this Repo.
-    /// - `root`: path containing the local repository
-    /// - `commit_msg`: optional commit message
-    /// - `buffer`: number of context lines in the diff
-    ///
-    /// Returns `true` if changes were made to any file, otherwise `false`.
-    pub fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize) -> bool {
-        let repo_path = root.join(&self.reponame);
-        info!(
-            "Processing repository '{}' at '{}'",
-            self.reponame,
-            repo_path.display()
-        );
-
-        // Create or check out the branch specified by `self.change_id`
-        if !self.create_or_switch_branch(&repo_path) {
-            warn!(
-                "Skipping '{}' due to branch switching failure.",
-                repo_path.display()
-            );
-            return false;
-        }
-
-        let mut changed_files = Vec::new();
-
-        for file in &self.files {
-            if let Some(change) = &self.change {
-                let full_path = repo_path.join(file);
-                debug!("Processing file '{}'", full_path.display());
-
-                if let Some(diff) = self.process_file(&full_path, change, buffer, commit_msg.is_some()) {
-                    info!("Changes detected in '{}'", full_path.display());
-                    changed_files.push((file.clone(), diff));
-                }
-            }
-        }
-
-        if changed_files.is_empty() {
-            info!("No changes detected in repository '{}'", self.reponame);
-            return false;
-        }
-
-        info!("Changes found in repository '{}':", self.reponame);
-        for (file, diff) in &changed_files {
-            info!("  Modified file: '{}'", file);
-            for line in diff.lines() {
-                debug!("    {}", line);
-            }
-        }
-
-        // If user wants to commit/push/PR, do it.
-        if let Some(msg) = commit_msg {
-            info!(
-                "Committing changes in '{}' with message: '{}'",
-                repo_path.display(),
-                msg
-            );
-            self.commit_changes(&repo_path, msg);
-
-            if !self.push_branch(&repo_path) {
-                warn!("Skipping PR creation due to push failure.");
-                return false;
-            }
-
-            if let Some(pr_url) = self.create_pr(&repo_path) {
-                info!("PR created successfully: {}", pr_url);
-            } else {
-                warn!("Failed to create PR for repository '{}'", self.reponame);
-            }
-        }
-
-        true
-    }
-*/
-
     /// Approve a remote PR using GitHub CLI. This is relevant if you have no local checkout.
     /// Uses `--repo <self.reponame>` and `--branch <self.change_id>`.
     pub fn approve_pr_remote(&self) -> bool {
@@ -442,56 +380,6 @@ impl Repo {
         }
     }
 
-/*
-    /// Merge a remote PR (with admin privileges, squash, delete-branch) using GitHub CLI.
-    /// This is relevant if you have no local checkout. Must be preceded by a successful `approve_pr_remote`.
-    pub fn merge_pr_remote(&self) -> bool {
-        info!(
-            "Merging pull request for repo '{}', branch '{}'",
-            self.reponame, self.change_id
-        );
-
-        // In some workflows you must call `approve_pr_remote` first. Shown here as example.
-        let merge_status = Command::new("gh")
-            .args([
-                "pr",
-                "merge",
-                "--admin",
-                "--squash",
-                "--delete-branch",
-                "--repo",
-                &self.reponame,
-                "--branch",
-                &self.change_id,
-            ])
-            .status();
-
-        match merge_status {
-            Ok(s) if s.success() => {
-                info!(
-                    "Pull request merged for repo '{}', branch '{}'",
-                    self.reponame, self.change_id
-                );
-                true
-            }
-            Ok(_) => {
-                warn!(
-                    "Failed to merge PR for repo '{}', branch '{}'",
-                    self.reponame, self.change_id
-                );
-                false
-            }
-            Err(err) => {
-                error!(
-                    "Error running 'gh pr merge': repo '{}', branch '{}', error: {}",
-                    self.reponame, self.change_id, err
-                );
-                false
-            }
-        }
-    }
-*/
-
     /// Returns true if the repo's working tree is clean (no staged or unstaged changes).
     fn is_working_tree_clean(&self, repo_path: &Path) -> bool {
         let staged_clean = Command::new("git")
@@ -521,102 +409,6 @@ impl Repo {
             false
         }
     }
-
-/*
-    /// Perform the user's requested changes (substitution or regex) on a single file.
-    /// Returns a string of the diff if any changes were made, otherwise None.
-    fn process_file(
-        &self,
-        full_path: &Path,
-        change: &Change,
-        buffer: usize,
-        commit: bool,
-    ) -> Option<String> {
-        info!("Processing file '{}'", full_path.display());
-
-        let content = match read_to_string(full_path) {
-            Ok(content) => content,
-            Err(err) => {
-                error!("Failed to read file '{}': {}", full_path.display(), err);
-                return None;
-            }
-        };
-
-        let updated_content = match change {
-            Change::Sub(pattern, replacement) => {
-                if !content.contains(pattern) {
-                    debug!(
-                        "Substring '{}' not found in file '{}'; skipping.",
-                        pattern,
-                        full_path.display()
-                    );
-                    return None;
-                }
-                info!(
-                    "Applying substring replacement '{}' -> '{}' in '{}'",
-                    pattern,
-                    replacement,
-                    full_path.display()
-                );
-                content.replace(pattern, replacement)
-            }
-            Change::Regex(pattern, replacement) => {
-                let regex = match Regex::new(pattern) {
-                    Ok(re) => re,
-                    Err(err) => {
-                        error!(
-                            "Failed to compile regex '{}' for file '{}': {}",
-                            pattern,
-                            full_path.display(),
-                            err
-                        );
-                        return None;
-                    }
-                };
-                if !regex.is_match(&content) {
-                    debug!(
-                        "Regex '{}' did not match in file '{}'; skipping.",
-                        pattern,
-                        full_path.display()
-                    );
-                    return None;
-                }
-                info!(
-                    "Applying regex replacement '{}' -> '{}' in '{}'",
-                    pattern,
-                    replacement,
-                    full_path.display()
-                );
-                regex.replace_all(&content, replacement).to_string()
-            }
-        };
-
-        if updated_content == content {
-            debug!(
-                "Replacement resulted in no changes for file '{}'. Skipping.",
-                full_path.display()
-            );
-            return None;
-        }
-
-        let diff = self.generate_diff(&content, &updated_content, buffer);
-        info!("Generated diff for '{}'", full_path.display());
-
-        if commit {
-            if let Err(err) = write(full_path, &updated_content) {
-                error!(
-                    "Failed to write updated content to '{}': {}",
-                    full_path.display(),
-                    err
-                );
-                return None;
-            }
-            info!("Updated file '{}' successfully.", full_path.display());
-        }
-
-        Some(diff)
-    }
-*/
 
     /// Build a unified-diff-like string using the `TextDiff` library.
     pub fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
