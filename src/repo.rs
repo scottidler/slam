@@ -408,6 +408,41 @@ impl Repo {
         }
     }
 
+    pub fn merge_pr_remote(&self, admin_override: bool) -> bool {
+        info!(
+            "Merging pull request for repo '{}', branch '{}'",
+            self.reponame,
+            self.change_id
+        );
+
+        // Build the args
+        let mut args = vec!["pr", "merge", "--squash", "--delete-branch", "--repo", &self.reponame, "--branch", &self.change_id];
+        if admin_override {
+            args.insert(3, "--admin");
+        }
+
+        let merge_status = Command::new("gh").args(&args).status();
+
+        match merge_status {
+            Ok(s) if s.success() => {
+                info!("Pull request merged for repo '{}', branch '{}'", self.reponame, self.change_id);
+                true
+            }
+            Ok(_) => {
+                warn!("Failed to merge PR for repo '{}', branch '{}'", self.reponame, self.change_id);
+                false
+            }
+            Err(err) => {
+                error!(
+                    "Error running 'gh pr merge': repo '{}', branch '{}', error: {}",
+                    self.reponame, self.change_id, err
+                );
+                false
+            }
+        }
+    }
+
+/*
     /// Merge a remote PR (with admin privileges, squash, delete-branch) using GitHub CLI.
     /// This is relevant if you have no local checkout. Must be preceded by a successful `approve_pr_remote`.
     pub fn merge_pr_remote(&self) -> bool {
@@ -455,6 +490,7 @@ impl Repo {
             }
         }
     }
+*/
 
     /// Returns true if the repo's working tree is clean (no staged or unstaged changes).
     fn is_working_tree_clean(&self, repo_path: &Path) -> bool {
@@ -583,7 +619,7 @@ impl Repo {
 */
 
     /// Build a unified-diff-like string using the `TextDiff` library.
-    fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
+    pub fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
         info!("Generating diff with buffer size {}", buffer);
 
         let diff = TextDiff::from_lines(original, updated);
