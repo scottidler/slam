@@ -3,8 +3,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// Runs a Git command and returns the output
-fn run_git_command(repo_path: &Path, args: &[&str]) -> Result<Output> {
+fn git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
         .current_dir(repo_path)
         .args(args)
@@ -12,20 +11,18 @@ fn run_git_command(repo_path: &Path, args: &[&str]) -> Result<Output> {
         .map_err(|e| eyre!("Failed to execute git {:?}: {}", args, e))
 }
 
-/// Checks if the working tree of the given repository is clean.
 pub fn is_working_tree_clean(repo_path: &Path) -> bool {
-    let staged_clean = run_git_command(repo_path, &["diff", "--cached", "--quiet"])
+    let staged_clean = git(repo_path, &["diff", "--cached", "--quiet"])
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    let unstaged_clean = run_git_command(repo_path, &["diff", "--quiet"])
+    let unstaged_clean = git(repo_path, &["diff", "--quiet"])
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     staged_clean && unstaged_clean
 }
 
-/// Finds all Git repositories recursively under the given root directory.
 pub fn find_git_repositories(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut repos = Vec::new();
     for entry in std::fs::read_dir(root)? {
@@ -39,39 +36,34 @@ pub fn find_git_repositories(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(repos)
 }
 
-/// Creates or switches to the given branch in the repository.
 pub fn create_or_switch_branch(repo_path: &Path, branch: &str) -> Result<()> {
-    let branch_exists = run_git_command(repo_path, &["rev-parse", "--verify", branch])
+    let branch_exists = git(repo_path, &["rev-parse", "--verify", branch])
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     if branch_exists {
-        run_git_command(repo_path, &["checkout", branch])?;
+        git(repo_path, &["checkout", branch])?;
     } else {
-        run_git_command(repo_path, &["checkout", "-b", branch])?;
+        git(repo_path, &["checkout", "-b", branch])?;
     }
     Ok(())
 }
 
-/// Stages all modified files in the given repository.
 pub fn stage_files(repo_path: &Path) -> Result<()> {
-    run_git_command(repo_path, &["add", "."])?;
+    git(repo_path, &["add", "."])?;
     Ok(())
 }
 
-/// Commits changes in the given repository with a message.
 pub fn commit_changes(repo_path: &Path, message: &str) -> Result<()> {
-    run_git_command(repo_path, &["commit", "-m", message])?;
+    git(repo_path, &["commit", "-m", message])?;
     Ok(())
 }
 
-/// Pushes the current branch to the remote repository.
 pub fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
-    run_git_command(repo_path, &["push", "--set-upstream", "origin", branch])?;
+    git(repo_path, &["push", "--set-upstream", "origin", branch])?;
     Ok(())
 }
 
-/// Finds GitHub repositories within an organization.
 pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
     let output = Command::new("gh")
         .args(["repo", "list", org, "--limit", "1000", "--json", "name"])
@@ -93,7 +85,6 @@ pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
     Ok(repos)
 }
 
-/// Retrieves the PR number for a given repository and branch.
 pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     let output = Command::new("gh")
         .args([
@@ -127,9 +118,9 @@ pub fn get_pr_diff(repo: &str, pr_number: u64) -> Result<String> {
         .output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
     log::debug!("gh pr diff stdout for {}#{}:\n{}", repo, pr_number, stdout);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
     log::debug!("gh pr diff stderr for {}#{}:\n{}", repo, pr_number, stderr);
 
     if !output.status.success() {
@@ -148,7 +139,6 @@ pub fn get_pr_diff(repo: &str, pr_number: u64) -> Result<String> {
     Ok(stdout.trim().to_string())
 }
 
-/// Approves a GitHub PR remotely.
 pub fn approve_pr(repo: &str, branch: &str) -> Result<()> {
     Command::new("gh")
         .args(["pr", "review", "--approve", "--repo", repo, "--branch", branch])
@@ -156,7 +146,6 @@ pub fn approve_pr(repo: &str, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Merges a GitHub PR remotely.
 pub fn merge_pr(repo: &str, branch: &str, admin_override: bool) -> Result<()> {
     let mut args = vec!["pr", "merge", "--squash", "--delete-branch", "--repo", repo, "--branch", branch];
     if admin_override {

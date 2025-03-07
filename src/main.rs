@@ -19,7 +19,6 @@ mod git;
 
 use repo::{Change, Repo};
 
-/// Returns a default "change ID" in the format `SLAM-YYYY-MM-DD`
 fn default_change_id() -> String {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let change_id = format!("SLAM-{}", date);
@@ -59,7 +58,6 @@ fn get_cli_tool_status() -> String {
 }
 
 
-/// Top-level CLI parser for the `slam` command
 #[derive(Parser, Debug)]
 #[command(
     name = "slam",
@@ -71,10 +69,8 @@ struct SlamCli {
     command: SlamCommand,
 }
 
-/// Subcommands: Create (local repos) or Review (remote repos).
 #[derive(Subcommand, Debug)]
 enum SlamCommand {
-    /// Create and commit changes in repositories (alias: alleyoop)
     #[command(alias = "alleyoop")]
     #[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
     Create {
@@ -128,7 +124,6 @@ enum SlamCommand {
         repos: Vec<String>,
     },
 
-    /// Review and merge open PRs (alias: dunk)
     Review {
         #[arg(
             short = 'x',
@@ -285,11 +280,9 @@ fn process_review_command(
     buffer: usize,
     user_repo_specs: Vec<String>,
 ) -> Result<()> {
-    // A) Gather all repos in the org
     let repo_names = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", repo_names.len(), org);
 
-    // B) Filter by user input
     let filtered_names: Vec<_> = repo_names
         .into_iter()
         .filter(|full_name| {
@@ -298,7 +291,6 @@ fn process_review_command(
         .collect();
     info!("After user input filter, {} remain", filtered_names.len());
 
-    // C) Find repos with an open PR matching `change_id`
     let filtered_repos: Vec<Repo> = filtered_names
         .par_iter()
         .filter_map(|repo_name| {
@@ -333,10 +325,8 @@ fn process_review_command(
     let mut processed_count = 0;
 
     for repo in &filtered_repos {
-        // Show diff
         show_repo_diff(repo, buffer);
 
-        // If not approving, skip merge
         if !approve {
             info!("No --approve, skipping '{}'", repo.reponame);
             continue;
@@ -346,7 +336,6 @@ fn process_review_command(
             continue;
         }
 
-        // If not merging, done
         if !merge {
             info!("No --merge, skipping '{}'", repo.reponame);
             continue;
@@ -359,7 +348,6 @@ fn process_review_command(
         }
     }
 
-    // Summary
     info!(
         "Review completed. PRs Approved: {}, PRs Merged: {}",
         if approve { processed_count } else { 0 },
@@ -370,7 +358,6 @@ fn process_review_command(
 }
 
 fn show_repo_diff(repo: &Repo, buffer: usize) {
-    // 1) fetch the patch
     let diff_text = match git::get_pr_diff(&repo.reponame, repo.pr_number) {
         Ok(txt) => txt,
         Err(e) => {
@@ -379,13 +366,11 @@ fn show_repo_diff(repo: &Repo, buffer: usize) {
         }
     };
 
-    // 2) Parse using the method on `Repo`
     let file_patches = repo.parse_unified_diff(&diff_text);
     if file_patches.is_empty() {
         return;
     }
 
-    // 3) show diffs
     println!("Repo: {}", repo.reponame);
     for (filename, old_text, new_text) in file_patches {
         println!("  Modified file: {}", filename);

@@ -7,7 +7,6 @@ use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 use colored::*;
 
-/// Represents the type of string replacement the user wants to perform.
 #[derive(Debug, Clone)]
 pub enum Change {
     Sub(String, String),
@@ -26,7 +25,6 @@ impl Change {
     }
 }
 
-/// Represents a repository and its associated change operations.
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub reponame: String,
@@ -37,7 +35,6 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Creates a Repo object from a local directory on disk.
     pub fn create_repo_from_local(
         repo: &Path,
         root: &Path,
@@ -88,7 +85,6 @@ impl Repo {
         })
     }
 
-    /// Creates a Repo from a remote reference (e.g., "org_name/repo_name") with a known PR number.
     pub fn create_repo_from_remote_with_pr(repo_name: &str, change_id: &str, pr_number: u64) -> Self {
         Self {
             reponame: repo_name.to_owned(),
@@ -99,7 +95,6 @@ impl Repo {
         }
     }
 
-    /// Applies changes to the repository, optionally committing and pushing them.
     pub fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize) -> bool {
         let repo_path = root.join(&self.reponame);
         info!("Processing repository '{}'", self.reponame);
@@ -140,7 +135,6 @@ impl Repo {
         true
     }
 
-    /// Applies a substitution or regex change to a single file.
     fn process_file(&self, full_path: &Path, change: &Change, buffer: usize, commit: bool) -> Option<String> {
         let content = read_to_string(full_path).ok()?;
 
@@ -179,7 +173,6 @@ impl Repo {
 
         for line in diff_text.lines() {
             if line.starts_with("diff --git ") {
-                // If we were processing a file, save its accumulated content
                 if let Some((filename, old_content, new_content)) = current_file.take() {
                     if !filename.is_empty() {
                         result.push((filename, old_content.join("\n"), new_content.join("\n")));
@@ -202,7 +195,6 @@ impl Repo {
             }
         }
 
-        // Push any remaining file being processed
         if let Some((filename, old_content, new_content)) = current_file {
             if !filename.is_empty() {
                 result.push((filename, old_content.join("\n"), new_content.join("\n")));
@@ -219,7 +211,6 @@ impl Repo {
         result
     }
 
-    /// Generates a formatted diff string.
     pub fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
@@ -257,7 +248,6 @@ impl Repo {
         result
     }
 
-    /// Finds files matching a glob pattern within a repository.
     fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         let search_pattern = repo.join(pattern).to_string_lossy().to_string();
         let mut matches = Vec::new();
@@ -272,7 +262,6 @@ impl Repo {
         Ok(matches)
     }
 
-    /// Approves a remote PR.
     pub fn approve_pr_remote(&self) -> bool {
         match git::approve_pr(&self.reponame, &self.change_id) {
             Ok(_) => {
@@ -286,7 +275,6 @@ impl Repo {
         }
     }
 
-    /// Merges a remote PR.
     pub fn merge_pr_remote(&self, admin_override: bool) -> bool {
         match git::merge_pr(&self.reponame, &self.change_id, admin_override) {
             Ok(_) => {
