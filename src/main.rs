@@ -11,6 +11,7 @@ use eyre::{Result};
 use log::{info, debug, warn};
 use rayon::prelude::*;
 use std::process::Command;
+use itertools::Itertools;
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
@@ -277,10 +278,11 @@ fn process_create_command(
         }
     }
 
-    let filtered_repos = discovered_repos
+    let filtered_repos: Vec<_> = discovered_repos
         .into_iter()
         .filter(|repo| user_repo_specs.is_empty() || user_repo_specs.iter().any(|spec| repo.reponame.contains(spec)))
-        .collect::<Vec<_>>();
+        .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
+        .collect();
 
     for repo in &filtered_repos {
         if let Some(commit_msg) = commit.as_deref() {
@@ -316,7 +318,7 @@ fn process_review_command(
         .collect();
     info!("After user input filter, {} remain", filtered_names.len());
 
-    let filtered_repos: Vec<Repo> = filtered_names
+    let mut filtered_repos: Vec<Repo> = filtered_names
         .par_iter()
         .filter_map(|repo_name| {
             match git::get_pr_number_for_repo(repo_name, &change_id) {
@@ -335,6 +337,9 @@ fn process_review_command(
             }
         })
         .collect();
+
+    filtered_repos.sort_by(|a, b| a.reponame.cmp(&b.reponame));
+
 
     if filtered_repos.is_empty() {
         warn!("No repositories found with an open PR for '{}'", change_id);
@@ -396,7 +401,8 @@ fn show_repo_diff(repo: &Repo, buffer: usize) {
         return;
     }
 
-    println!("Repo: {}", repo.reponame);
+    println!("\nRepo: {}", repo.reponame); // <-- Ensures a blank line before
+
     for (filename, old_text, new_text) in file_patches {
         println!("  Modified file: {}", filename);
         let short_diff = repo.generate_diff(&old_text, &new_text, buffer);
