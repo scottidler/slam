@@ -6,7 +6,7 @@ use std::{
 
 use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
 use eyre::{Result};
-use log::{debug, info, LevelFilter};
+use log::{info, debug, warn, LevelFilter};
 use env_logger::Target;
 use rayon::prelude::*;
 
@@ -285,30 +285,113 @@ fn process_review_command(
     buffer: usize,
     user_repo_specs: Vec<String>,
 ) -> Result<()> {
+    // A) Gather all repos in the org
     let repo_names = git::find_repos_in_org(&org)?;
+    info!("Found {} repos in '{}'", repo_names.len(), org);
+
+    // B) Filter by user input
     let filtered_names: Vec<_> = repo_names
         .into_iter()
-        .filter(|full_name| user_repo_specs.is_empty() || user_repo_specs.iter().any(|pat| full_name.contains(pat)))
+        .filter(|full_name| {
+            user_repo_specs.is_empty() || user_repo_specs.iter().any(|pat| full_name.contains(pat))
+        })
         .collect();
+    info!("After user input filter, {} remain", filtered_names.len());
 
+    // C) Find repos with an open PR matching `change_id`
     let filtered_repos: Vec<Repo> = filtered_names
         .par_iter()
-        .filter_map(|name| git::get_pr_number_for_repo(name, &change_id).ok().map(|pr| Repo::create_repo_from_remote_with_pr(name, &change_id, pr)))
+        .filter_map(|repo_name| {
+            match git::get_pr_number_for_repo(repo_name, &change_id) {
+                Ok(pr_number) if pr_number > 0 => {
+                    info!("Found PR #{} for repo '{}'", pr_number, repo_name);
+                    Some(Repo::create_repo_from_remote_with_pr(repo_name, &change_id, pr_number))
+                }
+                Ok(_) => {
+                    debug!("No open PR found for '{}'", repo_name);
+                    None
+                }
+                Err(err) => {
+                    warn!("Error fetching PR for '{}': {}", repo_name, err);
+                    None
+                }
+            }
+        })
         .collect();
 
-    for repo in &filtered_repos {
-        let diff = git::get_pr_diff(&repo.reponame, repo.pr_number)?;
-        let formatted_diff = repo.generate_diff(&diff, &diff, buffer);
-        println!("Repo: {}", repo.reponame);
-        println!("{}", formatted_diff);
+    if filtered_repos.is_empty() {
+        warn!("No repositories found with an open PR for '{}'", change_id);
+        return Ok(());
+    }
 
-        if approve {
-            repo.approve_pr_remote();
+    info!(
+        "{} repositories have an open PR for '{}'",
+        filtered_repos.len(),
+        change_id
+    );
+
+    let mut processed_count = 0;
+
+    for repo in &filtered_repos {
+        // Show diff
+        show_repo_diff(repo, buffer);
+
+        // If not approving, skip merge
+        if !approve {
+            info!("No --approve, skipping '{}'", repo.reponame);
+            continue;
         }
-        if merge {
-            repo.merge_pr_remote(admin_override);
+        if !repo.approve_pr_remote() {
+            warn!("Failed to approve PR for '{}', skipping merge", repo.reponame);
+            continue;
+        }
+
+        // If not merging, done
+        if !merge {
+            info!("No --merge, skipping '{}'", repo.reponame);
+            continue;
+        }
+        if repo.merge_pr_remote(admin_override) {
+            info!("Successfully merged {}", repo.reponame);
+            processed_count += 1;
+        } else {
+            warn!("Failed to merge PR for '{}'", repo.reponame);
         }
     }
 
+    // Summary
+    info!(
+        "Review completed. PRs Approved: {}, PRs Merged: {}",
+        if approve { processed_count } else { 0 },
+        if merge { processed_count } else { 0 }
+    );
+
     Ok(())
+}
+
+fn show_repo_diff(repo: &Repo, buffer: usize) {
+    // 1) fetch the patch
+    let diff_text = match git::get_pr_diff(&repo.reponame, repo.pr_number) {
+        Ok(txt) => txt,
+        Err(e) => {
+            warn!("Could not fetch PR diff for '{}': {}", repo.reponame, e);
+            return;
+        }
+    };
+
+    // 2) Parse using the method on `Repo`
+    let file_patches = repo.parse_unified_diff(&diff_text);
+    if file_patches.is_empty() {
+        return;
+    }
+
+    // 3) show diffs
+    println!("Repo: {}", repo.reponame);
+    for (filename, old_text, new_text) in file_patches {
+        println!("  Modified file: {}", filename);
+        let short_diff = repo.generate_diff(&old_text, &new_text, buffer);
+        for line in short_diff.lines() {
+            println!("    {}", line);
+        }
+    }
 }

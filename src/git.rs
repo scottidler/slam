@@ -121,17 +121,31 @@ pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     Ok(pr_number)
 }
 
-/// Retrieves the diff of a PR from GitHub.
 pub fn get_pr_diff(repo: &str, pr_number: u64) -> Result<String> {
     let output = Command::new("gh")
         .args(["pr", "diff", &pr_number.to_string(), "-R", repo, "--patch"])
         .output()?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    log::debug!("gh pr diff stdout for {}#{}:\n{}", repo, pr_number, stdout);
+    log::debug!("gh pr diff stderr for {}#{}:\n{}", repo, pr_number, stderr);
+
     if !output.status.success() {
-        return Err(eyre!("Failed to fetch PR diff for {}#{}", repo, pr_number));
+        return Err(eyre!(
+            "Failed to fetch PR diff for {}#{}: {}",
+            repo,
+            pr_number,
+            stderr.trim()
+        ));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    if stdout.trim().is_empty() {
+        log::warn!("No diff returned for {}#{}", repo, pr_number);
+    }
+
+    Ok(stdout.trim().to_string())
 }
 
 /// Approves a GitHub PR remotely.

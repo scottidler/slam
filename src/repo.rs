@@ -173,6 +173,53 @@ impl Repo {
         Some(diff)
     }
 
+    pub fn parse_unified_diff(&self, diff_text: &str) -> Vec<(String, String, String)> {
+        let mut result = Vec::new();
+        let mut current_file: Option<(String, Vec<String>, Vec<String>)> = None;
+
+        for line in diff_text.lines() {
+            if line.starts_with("diff --git ") {
+                // If we were processing a file, save its accumulated content
+                if let Some((filename, old_content, new_content)) = current_file.take() {
+                    if !filename.is_empty() {
+                        result.push((filename, old_content.join("\n"), new_content.join("\n")));
+                    }
+                }
+                current_file = Some(("".to_string(), Vec::new(), Vec::new()));
+            } else if line.starts_with("+++ b/") {
+                if let Some(file) = current_file.as_mut() {
+                    file.0 = line.trim_start_matches("+++ b/").to_string();
+                }
+            } else if let Some(file) = current_file.as_mut() {
+                if line.starts_with('-') && !line.starts_with("---") {
+                    file.1.push(line[1..].to_string());
+                } else if line.starts_with('+') && !line.starts_with("+++") {
+                    file.2.push(line[1..].to_string());
+                } else if line.starts_with(' ') {
+                    file.1.push(line[1..].to_string());
+                    file.2.push(line[1..].to_string());
+                }
+            }
+        }
+
+        // Push any remaining file being processed
+        if let Some((filename, old_content, new_content)) = current_file {
+            if !filename.is_empty() {
+                result.push((filename, old_content.join("\n"), new_content.join("\n")));
+            }
+        }
+
+        if result.is_empty() {
+            log::warn!(
+                "parse_unified_diff: No meaningful diffs were extracted for repo '{}'",
+                self.reponame
+            );
+        }
+
+        result
+    }
+
+    /// Generates a formatted diff string.
     pub fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
         let diff = TextDiff::from_lines(original, updated);
         let mut result = String::new();
