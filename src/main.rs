@@ -1,14 +1,16 @@
 use std::{
     env,
     fs,
+    io,
     io::Write,
+    path::Path,
 };
 
 use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
 use eyre::{Result};
-use log::{info, debug, warn, LevelFilter};
-use env_logger::Target;
+use log::{info, debug, warn};
 use rayon::prelude::*;
+use std::process::Command;
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
@@ -26,8 +28,6 @@ fn default_change_id() -> String {
     change_id
 }
 
-use std::process::Command;
-
 fn get_cli_tool_status() -> String {
     let success = "✅";
     let failure = "❌";
@@ -35,24 +35,34 @@ fn get_cli_tool_status() -> String {
 
     let mut output_string = String::new();
     output_string.push('\n');
-    for (tool_bin, args) in &tools {
-        match Command::new(tool_bin).args(args.iter()).output() {
+    for (tool, args) in &tools {
+        match Command::new(tool).args(args.iter()).output() {
             Ok(cmd_output) if cmd_output.status.success() => {
                 let stdout = String::from_utf8_lossy(&cmd_output.stdout);
-                let version_line = stdout.lines().next().unwrap_or("Unknown Version");
-                output_string.push_str(&format!(
-                    "{} {} {}\n",
-                    success, tool_bin, version_line.trim()
-                ));
+                let version = stdout.lines().next().unwrap_or("Unknown Version");
+                output_string.push_str(&format!("{} {}\n", success, version.trim()));
             }
             _ => {
-                output_string.push_str(&format!(
-                    "{} {} (missing or broken)\n",
-                    failure, tool_bin
-                ));
+                output_string.push_str(&format!("{} {} (missing or broken)\n", failure, tool));
             }
         }
     }
+    let log_status = {
+        let log_dir = Path::new("/var/log/messages/slam");
+        if log_dir.exists() && log_dir.is_dir() {
+            match fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_dir.join("slam.log"))
+            {
+                Ok(_) => format!("{} {} (writable)\n", success, log_dir.display()),
+                Err(_) => format!("{} {} (!writable)\n", failure, log_dir.display()),
+            }
+        } else {
+            format!("{} {} (not found)\n", failure, log_dir.display())
+        }
+    };
+    output_string.push_str(&log_status);
     output_string.push('\n');
     output_string
 }
@@ -61,7 +71,7 @@ fn get_cli_tool_status() -> String {
 #[derive(Parser, Debug)]
 #[command(
     name = "slam",
-    about = "Finds and operates on repositories",
+    about = "HPA: horizontal PR autoscaler",
     version = built_info::GIT_DESCRIBE
 )]
 struct SlamCli {
@@ -177,16 +187,31 @@ fn main() -> Result<()> {
         env::set_var("RUST_LOG", "info");
     }
 
-    fs::create_dir_all("/var/log/messages/slam")?;
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/var/log/messages/slam/slam.log")
-        .expect("Failed to open log file");
+    let log_dir = Path::new("/var/log/messages/slam");
+    let log_file_path = log_dir.join("slam.log");
+
+    let log_writer: Box<dyn Write + Send> = if log_dir.exists() && log_dir.is_dir() {
+        match fs::OpenOptions::new().create(true).append(true).open(&log_file_path) {
+            Ok(file) => Box::new(file),
+            Err(err) => {
+                eprintln!(
+                    "Log directory exists but is not writable: {}. Falling back to stdout.",
+                    err
+                );
+                Box::new(io::stdout())
+            }
+        }
+    } else {
+        eprintln!(
+            "Log directory {} not found. Falling back to stdout.",
+            log_dir.display()
+        );
+        Box::new(io::stdout())
+    };
 
     env_logger::Builder::new()
-        .filter_level(LevelFilter::Info)
-        .target(Target::Pipe(Box::new(log_file)))
+        .filter_level(log::LevelFilter::Info)
+        .target(env_logger::Target::Pipe(log_writer))
         .format(|buf, record| {
             writeln!(
                 buf,
