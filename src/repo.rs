@@ -55,7 +55,7 @@ impl Repo {
         let mut files = Vec::new();
 
         if let Some(pattern) = files_pattern {
-            match Self::find_files_in_repo(repo, pattern) {
+            match find_files_in_repo(repo, pattern) {
                 Ok(matched_files) => {
                     files.extend(matched_files.into_iter().map(|f| f.display().to_string()));
                     files.sort();
@@ -108,7 +108,7 @@ impl Repo {
         for file in &self.files {
             if let Some(change) = &self.change {
                 let full_path = repo_path.join(file);
-                if let Some(diff) = self.process_file(&full_path, change, buffer, commit_msg.is_some()) {
+                if let Some(diff) = process_file(&full_path, change, buffer, commit_msg.is_some()) {
                     changed_files.push((file.clone(), diff));
                 }
             }
@@ -134,76 +134,50 @@ impl Repo {
 
         true
     }
+}
 
-    fn process_file(&self, full_path: &Path, change: &Change, buffer: usize, commit: bool) -> Option<String> {
-        let content = read_to_string(full_path).ok()?;
+fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
+    let search_pattern = repo.join(pattern).to_string_lossy().to_string();
+    let mut matches = Vec::new();
 
-        let updated_content = match change {
-            Change::Sub(pattern, replacement) => {
-                if !content.contains(pattern) {
-                    return None;
-                }
-                content.replace(pattern, replacement)
-            }
-            Change::Regex(pattern, replacement) => {
-                let regex = Regex::new(pattern).ok()?;
-                if !regex.is_match(&content) {
-                    return None;
-                }
-                regex.replace_all(&content, replacement).to_string()
-            }
-        };
-
-        if updated_content == content {
-            return None;
-        }
-
-        let diff = generate_diff(&content, &updated_content, buffer);
-
-        if commit {
-            let _ = write(full_path, &updated_content);
-        }
-
-        Some(diff)
-    }
-
-    fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
-        let search_pattern = repo.join(pattern).to_string_lossy().to_string();
-        let mut matches = Vec::new();
-
-        for entry in glob::glob(&search_pattern)? {
-            if let Ok(path) = entry {
-                let relative_path = path.strip_prefix(repo)?.to_path_buf();
-                matches.push(relative_path);
-            }
-        }
-
-        Ok(matches)
-    }
-
-    pub fn approve_pr_remote(&self) -> bool {
-        match git::approve_pr(&self.reponame, &self.change_id) {
-            Ok(_) => {
-                info!("PR approved for '{}'", self.reponame);
-                true
-            }
-            Err(e) => {
-                warn!("Failed to approve PR for '{}': {}", self.reponame, e);
-                false
-            }
+    for entry in glob::glob(&search_pattern)? {
+        if let Ok(path) = entry {
+            let relative_path = path.strip_prefix(repo)?.to_path_buf();
+            matches.push(relative_path);
         }
     }
 
-    pub fn merge_pr_remote(&self, admin_override: bool) -> bool {
-        match git::merge_pr(&self.reponame, &self.change_id, admin_override) {
-            Ok(_) => {
-                info!("PR merged for '{}'", self.reponame);
-                true
+    Ok(matches)
+}
+
+fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) -> Option<String> {
+    let content = read_to_string(full_path).ok()?;
+
+    let updated_content = match change {
+        Change::Sub(pattern, replacement) => {
+            if !content.contains(pattern) {
+                return None;
             }
-            Err(e) => {
-                warn!("Failed to merge PR for '{}': {}", self.reponame, e);
-                false
-            }
+            content.replace(pattern, replacement)
         }
+        Change::Regex(pattern, replacement) => {
+            let regex = Regex::new(pattern).ok()?;
+            if !regex.is_match(&content) {
+                return None;
+            }
+            regex.replace_all(&content, replacement).to_string()
+        }
+    };
+
+    if updated_content == content {
+        return None;
     }
+
+    let diff = generate_diff(&content, &updated_content, buffer);
+
+    if commit {
+        let _ = write(full_path, &updated_content);
+    }
+
+    Some(diff)
 }

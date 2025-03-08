@@ -363,8 +363,9 @@ fn process_review_command(
             info!("No --approve, skipping '{}'", repo.reponame);
             continue;
         }
-        if !repo.approve_pr_remote() {
-            warn!("Failed to approve PR for '{}', skipping merge", repo.reponame);
+
+        if let Err(e) = git::approve_pr(&repo.reponame, &repo.change_id) {
+            warn!("Failed to approve PR for '{}': {}, skipping merge", repo.reponame, e);
             continue;
         }
 
@@ -372,11 +373,15 @@ fn process_review_command(
             info!("No --merge, skipping '{}'", repo.reponame);
             continue;
         }
-        if repo.merge_pr_remote(admin_override) {
-            info!("Successfully merged {}", repo.reponame);
-            processed_count += 1;
-        } else {
-            warn!("Failed to merge PR for '{}'", repo.reponame);
+
+        match git::merge_pr(&repo.reponame, &repo.change_id, admin_override) {
+            Ok(_) => {
+                info!("Successfully merged {}", repo.reponame);
+                processed_count += 1;
+            }
+            Err(e) => {
+                warn!("Failed to merge PR for '{}': {}", repo.reponame, e);
+            }
         }
     }
 
