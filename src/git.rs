@@ -2,6 +2,7 @@ use eyre::{eyre, Result};
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Output};
+use log::{debug, warn};
 
 fn git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
@@ -34,19 +35,6 @@ pub fn find_git_repositories(root: &Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     Ok(repos)
-}
-
-pub fn create_or_switch_branch(repo_path: &Path, branch: &str) -> Result<()> {
-    let branch_exists = git(repo_path, &["rev-parse", "--verify", branch])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if branch_exists {
-        git(repo_path, &["checkout", branch])?;
-    } else {
-        git(repo_path, &["checkout", "-b", branch])?;
-    }
-    Ok(())
 }
 
 pub fn stage_files(repo_path: &Path) -> Result<()> {
@@ -118,10 +106,10 @@ pub fn get_pr_diff(repo: &str, pr_number: u64) -> Result<String> {
         .output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    log::debug!("gh pr diff stdout for {}#{}:\n{}", repo, pr_number, stdout);
+    debug!("gh pr diff stdout for {}#{}:\n{}", repo, pr_number, stdout);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    log::debug!("gh pr diff stderr for {}#{}:\n{}", repo, pr_number, stderr);
+    debug!("gh pr diff stderr for {}#{}:\n{}", repo, pr_number, stderr);
 
     if !output.status.success() {
         return Err(eyre!(
@@ -133,7 +121,7 @@ pub fn get_pr_diff(repo: &str, pr_number: u64) -> Result<String> {
     }
 
     if stdout.trim().is_empty() {
-        log::warn!("No diff returned for {}#{}", repo, pr_number);
+        warn!("No diff returned for {}#{}", repo, pr_number);
     }
 
     Ok(stdout.trim().to_string())

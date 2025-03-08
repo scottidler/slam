@@ -22,7 +22,6 @@ mod diff;
 mod repo;
 
 use repo::{Change, Repo};
-use diff::show_repo_diff;
 
 fn default_change_id() -> String {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -69,7 +68,6 @@ fn get_cli_tool_status() -> String {
     output_string.push('\n');
     output_string
 }
-
 
 #[derive(Parser, Debug)]
 #[command(
@@ -268,9 +266,9 @@ fn process_create_command(
     buffer: usize,
     commit: Option<String>,
     user_repo_specs: Vec<String>,
-) -> Result<()> {
+) -> eyre::Result<()> {
     let change = Change::from_args(&sub, &regex);
-    let root = env::current_dir()?;
+    let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 
     let mut discovered_repos = Vec::new();
@@ -282,11 +280,15 @@ fn process_create_command(
 
     let filtered_repos: Vec<_> = discovered_repos
         .into_iter()
-        .filter(|repo| user_repo_specs.is_empty() || user_repo_specs.iter().any(|spec| repo.reponame.contains(spec)))
+        .filter(|repo| {
+            user_repo_specs.is_empty()
+                || user_repo_specs.iter().any(|spec| repo.reponame.contains(spec))
+        })
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
     for repo in &filtered_repos {
+        repo.show_create_diff(&root, buffer, commit.is_some());
         if let Some(commit_msg) = commit.as_deref() {
             git::stage_files(&root)?;
             if !git::is_working_tree_clean(&root) {
@@ -294,7 +296,6 @@ fn process_create_command(
                 git::push_branch(&root, &change_id)?;
             }
         }
-        repo.output(&root, commit.as_deref(), buffer);
     }
 
     Ok(())
@@ -308,9 +309,9 @@ fn process_review_command(
     admin_override: bool,
     buffer: usize,
     user_repo_specs: Vec<String>,
-) -> Result<()> {
+) -> eyre::Result<()> {
     let repo_names = git::find_repos_in_org(&org)?;
-    info!("Found {} repos in '{}'", repo_names.len(), org);
+    log::info!("Found {} repos in '{}'", repo_names.len(), org);
 
     let filtered_names: Vec<_> = repo_names
         .into_iter()
@@ -318,7 +319,7 @@ fn process_review_command(
             user_repo_specs.is_empty() || user_repo_specs.iter().any(|pat| full_name.contains(pat))
         })
         .collect();
-    info!("After user input filter, {} remain", filtered_names.len());
+    log::info!("After user input filter, {} remain", filtered_names.len());
 
     let mut filtered_repos: Vec<Repo> = filtered_names
         .par_iter()
@@ -342,7 +343,6 @@ fn process_review_command(
 
     filtered_repos.sort_by(|a, b| a.reponame.cmp(&b.reponame));
 
-
     if filtered_repos.is_empty() {
         warn!("No repositories found with an open PR for '{}'", change_id);
         return Ok(());
@@ -355,28 +355,27 @@ fn process_review_command(
     );
 
     let mut processed_count = 0;
-
     for repo in &filtered_repos {
-        show_repo_diff(&repo.reponame, repo.pr_number, buffer);
+        repo.show_review_diff(buffer);
 
         if !approve {
-            info!("No --approve, skipping '{}'", repo.reponame);
+            info!("No --approve flag, skipping review actions for '{}'", repo.reponame);
             continue;
         }
 
         if let Err(e) = git::approve_pr(&repo.reponame, &repo.change_id) {
-            warn!("Failed to approve PR for '{}': {}, skipping merge", repo.reponame, e);
+            warn!("Failed to approve PR for '{}': {}. Skipping merge.", repo.reponame, e);
             continue;
         }
 
         if !merge {
-            info!("No --merge, skipping '{}'", repo.reponame);
+            info!("No --merge flag, skipping merge for '{}'", repo.reponame);
             continue;
         }
 
         match git::merge_pr(&repo.reponame, &repo.change_id, admin_override) {
             Ok(_) => {
-                info!("Successfully merged {}", repo.reponame);
+                info!("Successfully merged '{}'", repo.reponame);
                 processed_count += 1;
             }
             Err(e) => {
@@ -390,7 +389,5 @@ fn process_review_command(
         if approve { processed_count } else { 0 },
         if merge { processed_count } else { 0 }
     );
-
     Ok(())
 }
-

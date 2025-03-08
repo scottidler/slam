@@ -1,9 +1,6 @@
 use colored::*;
 use similar::{ChangeTag, TextDiff};
 use regex::Regex;
-use log::warn;
-
-use crate::git;
 
 /// Given a unified diff (as produced by `gh pr diff --patch`), this function reconstructs a list of tuples,
 /// one per file in the diff. Each tuple contains:
@@ -20,16 +17,13 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
     let mut current_filename = String::new();
     let mut orig_lines: Vec<String> = Vec::new();
     let mut upd_lines: Vec<String> = Vec::new();
-    // Track the next expected line numbers in the faux files.
     let mut next_orig_line = 1;
     let mut next_upd_line = 1;
 
-    // Regex to match a hunk header.
     let hunk_header_re = Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@").unwrap();
 
     for line in diff_text.lines() {
         if line.starts_with("diff --git ") {
-            // When we see a new diff file, flush the previous one if available.
             if !current_filename.is_empty() {
                 results.push((
                     current_filename.clone(),
@@ -37,7 +31,6 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
                     upd_lines.join("\n"),
                 ));
             }
-            // Reset state for the new file.
             current_filename.clear();
             orig_lines.clear();
             upd_lines.clear();
@@ -46,13 +39,9 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
         } else if line.starts_with("+++ b/") {
             current_filename = line.trim_start_matches("+++ b/").to_string();
         } else if let Some(caps) = hunk_header_re.captures(line) {
-            // Parse the hunk header.
             let hunk_orig_start: usize = caps.get(1).unwrap().as_str().parse().unwrap();
-            // let _hunk_orig_count: usize = caps.get(2).map(|m| m.as_str().parse().unwrap()).unwrap_or(1);
             let hunk_upd_start: usize = caps.get(3).unwrap().as_str().parse().unwrap();
-            // let _hunk_upd_count: usize = caps.get(4).map(|m| m.as_str().parse().unwrap()).unwrap_or(1);
 
-            // Insert blank lines in the original to match the gap.
             if hunk_orig_start > next_orig_line {
                 let gap = hunk_orig_start - next_orig_line;
                 for _ in 0..gap {
@@ -60,7 +49,6 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
                 }
                 next_orig_line = hunk_orig_start;
             }
-            // Likewise for the updated file.
             if hunk_upd_start > next_upd_line {
                 let gap = hunk_upd_start - next_upd_line;
                 for _ in 0..gap {
@@ -68,27 +56,22 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
                 }
                 next_upd_line = hunk_upd_start;
             }
-            // Hunk header itself is not part of the file contents.
         } else if line.starts_with(" ") {
-            // Context line appears in both files.
             let content = line[1..].to_string();
             orig_lines.push(content.clone());
             upd_lines.push(content);
             next_orig_line += 1;
             next_upd_line += 1;
         } else if line.starts_with("-") && !line.starts_with("---") {
-            // Deletion line: only in the original.
             let content = line[1..].to_string();
             orig_lines.push(content);
             next_orig_line += 1;
         } else if line.starts_with("+") && !line.starts_with("+++") {
-            // Insertion line: only in the updated.
             let content = line[1..].to_string();
             upd_lines.push(content);
             next_upd_line += 1;
         }
     }
-    // Push the final file if any.
     if !current_filename.is_empty() {
         results.push((
             current_filename,
@@ -97,33 +80,6 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
         ));
     }
     results
-}
-
-/// In the review flow we call this function to reconstruct the original and updated file texts,
-/// then pass them to generate_diff so that both the create and review flows use the same pipeline.
-pub fn show_repo_diff(reponame: &str, pr_number: u64, buffer: usize) {
-    let diff_text = match git::get_pr_diff(&reponame, pr_number) {
-        Ok(txt) => txt,
-        Err(e) => {
-            warn!("Could not fetch PR diff for '{}': {}", reponame, e);
-            return;
-        }
-    };
-
-    let file_patches = reconstruct_files_from_unified_diff(&diff_text);
-    if file_patches.is_empty() {
-        return;
-    }
-
-    println!("Repo: {}", reponame);
-
-    for (filename, orig_text, upd_text) in file_patches {
-        println!("  Modified file: {}", filename);
-        let colored_diff = generate_diff(&orig_text, &upd_text, buffer);
-        for line in colored_diff.lines() {
-            println!("    {}", line);
-        }
-    }
 }
 
 /// generate_diff takes two full texts and produces a colorized diff.

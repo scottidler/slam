@@ -1,11 +1,11 @@
 use crate::git;
 use eyre::Result;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use regex::Regex;
 use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 
-use crate::diff::generate_diff;
+use crate::diff;
 
 #[derive(Debug, Clone)]
 pub enum Change {
@@ -95,44 +95,41 @@ impl Repo {
         }
     }
 
-    pub fn output(&self, root: &Path, commit_msg: Option<&str>, buffer: usize) -> bool {
+    /// Display the diff for local file changes (used in the create flow).
+    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) {
         let repo_path = root.join(&self.reponame);
-        info!("Processing repository '{}'", self.reponame);
-
-        if let Err(e) = git::create_or_switch_branch(&repo_path, &self.change_id) {
-            warn!("Skipping '{}': {}", repo_path.display(), e);
-            return false;
-        }
-
-        let mut changed_files = Vec::new();
+        println!("Repo: {}", self.reponame);
         for file in &self.files {
-            if let Some(change) = &self.change {
-                let full_path = repo_path.join(file);
-                if let Some(diff) = process_file(&full_path, change, buffer, commit_msg.is_some()) {
-                    changed_files.push((file.clone(), diff));
+            let full_path = repo_path.join(file);
+            if let Some(change) = self.change.as_ref() {
+                if let Some(diff) = process_file(&full_path, change, buffer, commit) {
+                    println!("  Modified file: {}", file);
+                    for line in diff.lines() {
+                        println!("    {}", line);
+                    }
                 }
             }
         }
+    }
 
-        if changed_files.is_empty() {
-            info!("No changes detected in '{}'", self.reponame);
-            return false;
-        }
-
+    /// Display the diff for a pull request (used in the review flow).
+    pub fn show_review_diff(&self, buffer: usize) {
         println!("Repo: {}", self.reponame);
-        for (file, diff) in &changed_files {
-            println!("  Modified file: {}", file);
-            for line in diff.lines() {
-                println!("    {}", line);
+        match git::get_pr_diff(&self.reponame, self.pr_number) {
+            Ok(diff_text) => {
+                let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
+                for (filename, orig_text, upd_text) in file_patches {
+                    println!("  Modified file: {}", filename);
+                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
+                    for line in colored_diff.lines() {
+                        println!("    {}", line);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Could not fetch PR diff for '{}': {}", self.reponame, e);
             }
         }
-
-        if let Some(msg) = commit_msg {
-            let _ = git::commit_changes(&repo_path, msg);
-            let _ = git::push_branch(&repo_path, &self.change_id);
-        }
-
-        true
     }
 }
 
@@ -173,7 +170,7 @@ fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) 
         return None;
     }
 
-    let diff = generate_diff(&content, &updated_content, buffer);
+    let diff = diff::generate_diff(&content, &updated_content, buffer);
 
     if commit {
         let _ = write(full_path, &updated_content);
