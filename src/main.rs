@@ -17,10 +17,12 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
 }
 
-mod repo;
 mod git;
+mod diff;
+mod repo;
 
 use repo::{Change, Repo};
+use diff::show_repo_diff;
 
 fn default_change_id() -> String {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -355,7 +357,7 @@ fn process_review_command(
     let mut processed_count = 0;
 
     for repo in &filtered_repos {
-        show_repo_diff(repo, buffer);
+        show_repo_diff(&repo.reponame, repo.pr_number, buffer);
 
         if !approve {
             info!("No --approve, skipping '{}'", repo.reponame);
@@ -387,27 +389,3 @@ fn process_review_command(
     Ok(())
 }
 
-fn show_repo_diff(repo: &Repo, buffer: usize) {
-    let diff_text = match git::get_pr_diff(&repo.reponame, repo.pr_number) {
-        Ok(txt) => txt,
-        Err(e) => {
-            warn!("Could not fetch PR diff for '{}': {}", repo.reponame, e);
-            return;
-        }
-    };
-
-    let file_patches = repo.parse_unified_diff(&diff_text);
-    if file_patches.is_empty() {
-        return;
-    }
-
-    println!("\nRepo: {}", repo.reponame); // <-- Ensures a blank line before
-
-    for (filename, old_text, new_text) in file_patches {
-        println!("  Modified file: {}", filename);
-        let short_diff = repo.generate_diff(&old_text, &new_text, buffer);
-        for line in short_diff.lines() {
-            println!("    {}", line);
-        }
-    }
-}

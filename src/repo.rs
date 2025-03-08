@@ -2,10 +2,10 @@ use crate::git;
 use eyre::Result;
 use log::{debug, info, warn};
 use regex::Regex;
-use similar::{ChangeTag, TextDiff};
 use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
-use colored::*;
+
+use crate::diff::generate_diff;
 
 #[derive(Debug, Clone)]
 pub enum Change {
@@ -158,94 +158,13 @@ impl Repo {
             return None;
         }
 
-        let diff = self.generate_diff(&content, &updated_content, buffer);
+        let diff = generate_diff(&content, &updated_content, buffer);
 
         if commit {
             let _ = write(full_path, &updated_content);
         }
 
         Some(diff)
-    }
-
-    pub fn parse_unified_diff(&self, diff_text: &str) -> Vec<(String, String, String)> {
-        let mut result = Vec::new();
-        let mut current_file: Option<(String, Vec<String>, Vec<String>)> = None;
-
-        for line in diff_text.lines() {
-            if line.starts_with("diff --git ") {
-                if let Some((filename, old_content, new_content)) = current_file.take() {
-                    if !filename.is_empty() {
-                        result.push((filename, old_content.join("\n"), new_content.join("\n")));
-                    }
-                }
-                current_file = Some(("".to_string(), Vec::new(), Vec::new()));
-            } else if line.starts_with("+++ b/") {
-                if let Some(file) = current_file.as_mut() {
-                    file.0 = line.trim_start_matches("+++ b/").to_string();
-                }
-            } else if let Some(file) = current_file.as_mut() {
-                if line.starts_with('-') && !line.starts_with("---") {
-                    file.1.push(line[1..].to_string());
-                } else if line.starts_with('+') && !line.starts_with("+++") {
-                    file.2.push(line[1..].to_string());
-                } else if line.starts_with(' ') {
-                    file.1.push(line[1..].to_string());
-                    file.2.push(line[1..].to_string());
-                }
-            }
-        }
-
-        if let Some((filename, old_content, new_content)) = current_file {
-            if !filename.is_empty() {
-                result.push((filename, old_content.join("\n"), new_content.join("\n")));
-            }
-        }
-
-        if result.is_empty() {
-            log::warn!(
-                "parse_unified_diff: No meaningful diffs were extracted for repo '{}'",
-                self.reponame
-            );
-        }
-
-        result
-    }
-
-    pub fn generate_diff(&self, original: &str, updated: &str, buffer: usize) -> String {
-        let diff = TextDiff::from_lines(original, updated);
-        let mut result = String::new();
-
-        for group in diff.grouped_ops(buffer) {
-            for op in group {
-                for change in diff.iter_changes(&op) {
-                    match change.tag() {
-                        ChangeTag::Delete => {
-                            result.push_str(&format!(
-                                "{} | {}\n",
-                                format!("-{:4}", change.old_index().unwrap() + 1).red(),
-                                change.to_string().trim_end().red()
-                            ));
-                        }
-                        ChangeTag::Insert => {
-                            result.push_str(&format!(
-                                "{} | {}\n",
-                                format!("+{:4}", change.new_index().unwrap() + 1).green(),
-                                change.to_string().trim_end().green()
-                            ));
-                        }
-                        ChangeTag::Equal => {
-                            result.push_str(&format!(
-                                "{} | {}\n",
-                                format!(" {:4}", change.old_index().unwrap() + 1).dimmed(),
-                                change.to_string().trim_end().dimmed()
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        result
     }
 
     fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
