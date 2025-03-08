@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
-use eyre::{Result};
+use eyre::Result;
 use log::{info, debug, warn};
 use rayon::prelude::*;
 use std::process::Command;
@@ -83,10 +83,17 @@ struct SlamCli {
 #[derive(Subcommand, Debug)]
 enum SlamCommand {
     #[command(alias = "alleyoop")]
-    #[command(group = ArgGroup::new("change").required(false).args(["sub", "regex"]))]
+    #[command(group = ArgGroup::new("change").required(false).args(["delete", "sub", "regex"]))]
     Create {
         #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
         files: Option<String>,
+
+        #[arg(
+            short = 'd',
+            long,
+            help = "Match and delete whole files"
+        )]
+        delete: bool,
 
         #[arg(
             short = 's',
@@ -232,6 +239,7 @@ fn main() -> Result<()> {
     match cli.command {
         SlamCommand::Create {
             files,
+            delete,
             sub,
             regex,
             change_id,
@@ -239,7 +247,8 @@ fn main() -> Result<()> {
             commit,
             repos,
         } => {
-            process_create_command(files, sub, regex, change_id, buffer, commit, repos)?;
+            let change = Change::from_args(delete, &sub, &regex);
+            process_create_command(files, change, change_id, buffer, commit, repos)?;
         }
         SlamCommand::Review {
             change_id,
@@ -260,14 +269,12 @@ fn main() -> Result<()> {
 
 fn process_create_command(
     files: Option<String>,
-    sub: Option<Vec<String>>,
-    regex: Option<Vec<String>>,
+    change: Option<Change>,
     change_id: String,
     buffer: usize,
     commit: Option<String>,
     user_repo_specs: Vec<String>,
 ) -> eyre::Result<()> {
-    let change = Change::from_args(&sub, &regex);
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 

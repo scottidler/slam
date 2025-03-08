@@ -1,7 +1,6 @@
 use crate::git;
 use eyre::Result;
 use log::{debug, warn};
-use regex::Regex;
 use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 
@@ -9,13 +8,16 @@ use crate::diff;
 
 #[derive(Debug, Clone)]
 pub enum Change {
+    Delete,
     Sub(String, String),
     Regex(String, String),
 }
 
 impl Change {
-    pub fn from_args(sub: &Option<Vec<String>>, regex: &Option<Vec<String>>) -> Option<Self> {
-        if let Some(sub_args) = sub {
+    pub fn from_args(delete: bool, sub: &Option<Vec<String>>, regex: &Option<Vec<String>>) -> Option<Self> {
+        if delete {
+            Some(Self::Delete)
+        } else if let Some(sub_args) = sub {
             Some(Self::Sub(sub_args[0].clone(), sub_args[1].clone()))
         } else if let Some(regex_args) = regex {
             Some(Self::Regex(regex_args[0].clone(), regex_args[1].clone()))
@@ -148,6 +150,49 @@ fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
 }
 
 fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) -> Option<String> {
+    match change {
+        Change::Delete => {
+            if commit {
+                let _ = std::fs::remove_file(full_path);
+            }
+            // For deletions, we choose not to produce any diff output.
+            None
+        },
+        Change::Sub(pattern, replacement) => {
+            let content = read_to_string(full_path).ok()?;
+            if !content.contains(pattern) {
+                return None;
+            }
+            let updated_content = content.replace(pattern, replacement);
+            if updated_content == content {
+                return None;
+            }
+            let diff = diff::generate_diff(&content, &updated_content, buffer);
+            if commit {
+                let _ = write(full_path, &updated_content);
+            }
+            Some(diff)
+        },
+        Change::Regex(pattern, replacement) => {
+            let content = read_to_string(full_path).ok()?;
+            let regex = regex::Regex::new(pattern).ok()?;
+            if !regex.is_match(&content) {
+                return None;
+            }
+            let updated_content = regex.replace_all(&content, replacement).to_string();
+            if updated_content == content {
+                return None;
+            }
+            let diff = diff::generate_diff(&content, &updated_content, buffer);
+            if commit {
+                let _ = write(full_path, &updated_content);
+            }
+            Some(diff)
+        },
+    }
+}
+/*
+fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) -> Option<String> {
     let content = read_to_string(full_path).ok()?;
 
     let updated_content = match change {
@@ -178,3 +223,4 @@ fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) 
 
     Some(diff)
 }
+*/
