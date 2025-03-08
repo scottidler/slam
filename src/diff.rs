@@ -1,10 +1,106 @@
 use colored::*;
 use similar::{ChangeTag, TextDiff};
+use regex::Regex;
 use log::warn;
 
 use crate::git;
 
+/// Given a unified diff (as produced by `gh pr diff --patch`), this function reconstructs a list of tuples,
+/// one per file in the diff. Each tuple contains:
+///   (filename, reconstructed original file text, reconstructed updated file text)
+///
+/// To ensure that the line numbers in the final colorized diff match the hunk offsets, we insert blank lines
+/// for any missing portions. Specifically, for each hunk header of the form:
+///   @@ -orig_start,orig_count +upd_start,upd_count @@
+/// we compute the gap between the expected next line and the hunk start and insert that many blank lines.
+/// (Note: even if the gap is greater than 3, we insert all the missing lines so that the internal line
+/// numbers in the reconstructed file are correct.)
+pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, String, String)> {
+    let mut results = Vec::new();
+    let mut current_filename = String::new();
+    let mut orig_lines: Vec<String> = Vec::new();
+    let mut upd_lines: Vec<String> = Vec::new();
+    // Track the next expected line numbers in the faux files.
+    let mut next_orig_line = 1;
+    let mut next_upd_line = 1;
 
+    // Regex to match a hunk header.
+    let hunk_header_re = Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@").unwrap();
+
+    for line in diff_text.lines() {
+        if line.starts_with("diff --git ") {
+            // When we see a new diff file, flush the previous one if available.
+            if !current_filename.is_empty() {
+                results.push((
+                    current_filename.clone(),
+                    orig_lines.join("\n"),
+                    upd_lines.join("\n"),
+                ));
+            }
+            // Reset state for the new file.
+            current_filename.clear();
+            orig_lines.clear();
+            upd_lines.clear();
+            next_orig_line = 1;
+            next_upd_line = 1;
+        } else if line.starts_with("+++ b/") {
+            current_filename = line.trim_start_matches("+++ b/").to_string();
+        } else if let Some(caps) = hunk_header_re.captures(line) {
+            // Parse the hunk header.
+            let hunk_orig_start: usize = caps.get(1).unwrap().as_str().parse().unwrap();
+            // let _hunk_orig_count: usize = caps.get(2).map(|m| m.as_str().parse().unwrap()).unwrap_or(1);
+            let hunk_upd_start: usize = caps.get(3).unwrap().as_str().parse().unwrap();
+            // let _hunk_upd_count: usize = caps.get(4).map(|m| m.as_str().parse().unwrap()).unwrap_or(1);
+
+            // Insert blank lines in the original to match the gap.
+            if hunk_orig_start > next_orig_line {
+                let gap = hunk_orig_start - next_orig_line;
+                for _ in 0..gap {
+                    orig_lines.push(String::new());
+                }
+                next_orig_line = hunk_orig_start;
+            }
+            // Likewise for the updated file.
+            if hunk_upd_start > next_upd_line {
+                let gap = hunk_upd_start - next_upd_line;
+                for _ in 0..gap {
+                    upd_lines.push(String::new());
+                }
+                next_upd_line = hunk_upd_start;
+            }
+            // Hunk header itself is not part of the file contents.
+        } else if line.starts_with(" ") {
+            // Context line appears in both files.
+            let content = line[1..].to_string();
+            orig_lines.push(content.clone());
+            upd_lines.push(content);
+            next_orig_line += 1;
+            next_upd_line += 1;
+        } else if line.starts_with("-") && !line.starts_with("---") {
+            // Deletion line: only in the original.
+            let content = line[1..].to_string();
+            orig_lines.push(content);
+            next_orig_line += 1;
+        } else if line.starts_with("+") && !line.starts_with("+++") {
+            // Insertion line: only in the updated.
+            let content = line[1..].to_string();
+            upd_lines.push(content);
+            next_upd_line += 1;
+        }
+    }
+    // Push the final file if any.
+    if !current_filename.is_empty() {
+        results.push((
+            current_filename,
+            orig_lines.join("\n"),
+            upd_lines.join("\n"),
+        ));
+    }
+    results
+}
+
+/// In the review flow we call this function to reconstruct the original and updated file texts,
+/// then pass them to generate_diff so that both the create and review flows use the same pipeline.
 pub fn show_repo_diff(reponame: &str, pr_number: u64, buffer: usize) {
     let diff_text = match git::get_pr_diff(&reponame, pr_number) {
         Ok(txt) => txt,
@@ -14,66 +110,25 @@ pub fn show_repo_diff(reponame: &str, pr_number: u64, buffer: usize) {
         }
     };
 
-    let file_patches = parse_unified_diff(&diff_text);
+    let file_patches = reconstruct_files_from_unified_diff(&diff_text);
     if file_patches.is_empty() {
         return;
     }
 
-    println!("\nRepo: {}", reponame); // <-- Ensures a blank line before
+    println!("Repo: {}", reponame);
 
-    for (filename, old_text, new_text) in file_patches {
+    for (filename, orig_text, upd_text) in file_patches {
         println!("  Modified file: {}", filename);
-        let short_diff = generate_diff(&old_text, &new_text, buffer);
-        for line in short_diff.lines() {
+        let colored_diff = generate_diff(&orig_text, &upd_text, buffer);
+        for line in colored_diff.lines() {
             println!("    {}", line);
         }
     }
 }
 
-pub fn parse_unified_diff(diff_text: &str) -> Vec<(String, String, String)> {
-    let mut result = Vec::new();
-    let mut current_file: Option<(String, Vec<String>, Vec<String>)> = None;
-
-    for line in diff_text.lines() {
-        if line.starts_with("diff --git ") {
-            if let Some((filename, old_content, new_content)) = current_file.take() {
-                if !filename.is_empty() {
-                    result.push((filename, old_content.join("\n"), new_content.join("\n")));
-                }
-            }
-            current_file = Some(("".to_string(), Vec::new(), Vec::new()));
-        } else if line.starts_with("+++ b/") {
-            if let Some(file) = current_file.as_mut() {
-                file.0 = line.trim_start_matches("+++ b/").to_string();
-            }
-        } else if let Some(file) = current_file.as_mut() {
-            if line.starts_with('-') && !line.starts_with("---") {
-                file.1.push(line[1..].to_string());
-            } else if line.starts_with('+') && !line.starts_with("+++") {
-                file.2.push(line[1..].to_string());
-            } else if line.starts_with(' ') {
-                file.1.push(line[1..].to_string());
-                file.2.push(line[1..].to_string());
-            }
-        }
-    }
-
-    if let Some((filename, old_content, new_content)) = current_file {
-        if !filename.is_empty() {
-            result.push((filename, old_content.join("\n"), new_content.join("\n")));
-        }
-    }
-
-    if result.is_empty() {
-        log::warn!(
-            "parse_unified_diff: No meaningful diffs were extracted for repo '{}'",
-            "DONKEY"
-        );
-    }
-
-    result
-}
-
+/// generate_diff takes two full texts and produces a colorized diff.
+/// Since the reconstructed files now have exactly the line numbers indicated by the hunk headers,
+/// the diff output will show matching line numbers.
 pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
     let diff = TextDiff::from_lines(original, updated);
     let mut result = String::new();
@@ -107,7 +162,5 @@ pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
             }
         }
     }
-
     result
 }
-
