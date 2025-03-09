@@ -297,6 +297,60 @@ fn process_create_command(
     for repo in &filtered_repos {
         repo.show_create_diff(&root, buffer, commit.is_some());
         if let Some(commit_msg) = commit.as_deref() {
+            let repo_path = root.join(&repo.reponame);
+            // Switch to (or create) the branch named by change_id
+            git::checkout_branch(&repo_path, &change_id)?;
+            // Stage and commit the changes on that branch
+            git::stage_files(&repo_path)?;
+            if !git::is_working_tree_clean(&repo_path) {
+                git::commit_changes(&repo_path, commit_msg)?;
+                git::push_branch(&repo_path, &change_id)?;
+            }
+            // Check if a PR already exists for this branch
+            let pr_number = git::get_pr_number_for_repo(&repo.reponame, &change_id)?;
+            if pr_number == 0 {
+                // Create a PR using the commit message as the PR title.
+                git::create_pr(&repo_path, &change_id, commit_msg);
+            } else {
+                println!("PR already exists for repo: {}", repo.reponame);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/*
+fn process_create_command(
+    files: Option<String>,
+    change: Option<Change>,
+    change_id: String,
+    buffer: usize,
+    commit: Option<String>,
+    user_repo_specs: Vec<String>,
+) -> eyre::Result<()> {
+    let root = std::env::current_dir()?;
+    let discovered_paths = git::find_git_repositories(&root)?;
+
+    let mut discovered_repos = Vec::new();
+    for path in discovered_paths {
+        if let Some(repo) = Repo::create_repo_from_local(&path, &root, &change, &files, &change_id) {
+            discovered_repos.push(repo);
+        }
+    }
+
+    let filtered_repos: Vec<_> = discovered_repos
+        .into_iter()
+        .filter(|repo| {
+            user_repo_specs.is_empty()
+                || user_repo_specs.iter().any(|spec| repo.reponame.contains(spec))
+        })
+        .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
+        .collect();
+
+    for repo in &filtered_repos {
+        repo.show_create_diff(&root, buffer, commit.is_some());
+        if let Some(commit_msg) = commit.as_deref() {
             git::stage_files(&root)?;
             if !git::is_working_tree_clean(&root) {
                 git::commit_changes(&root, commit_msg)?;
@@ -307,7 +361,7 @@ fn process_create_command(
 
     Ok(())
 }
-
+*/
 fn process_review_command(
     org: String,
     change_id: String,
