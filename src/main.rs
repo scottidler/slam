@@ -356,7 +356,6 @@ fn process_review_command(
 
     let mut merged_count = 0;
     for repo in &filtered_repos {
-        // The review method displays the diff and handles approval/merging.
         if repo.review(buffer, approve, merge, admin_override)? {
             merged_count += 1;
         }
