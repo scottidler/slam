@@ -1,9 +1,9 @@
-use crate::git;
 use eyre::Result;
 use log::{debug, warn};
 use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 
+use crate::git;
 use crate::diff;
 
 #[derive(Debug, Clone)]
@@ -104,11 +104,9 @@ impl Repo {
         if let Some(change) = self.change.as_ref() {
             match change {
                 Change::Delete => {
-                    // For deletions, list the files to be deleted.
                     for file in &self.files {
                         println!("  Delete file: {}", file);
                     }
-                    // Optionally, if commit is true, delete the files.
                     if commit {
                         for file in &self.files {
                             let full_path = repo_path.join(file);
@@ -117,7 +115,6 @@ impl Repo {
                     }
                 }
                 _ => {
-                    // For Sub and Regex changes, process files and display diffs.
                     for file in &self.files {
                         let full_path = repo_path.join(file);
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
@@ -130,7 +127,6 @@ impl Repo {
                 }
             }
         } else {
-            // If no change is specified, just list the matched files.
             for file in &self.files {
                 println!("  Matched file: {}", file);
             }
@@ -155,6 +151,35 @@ impl Repo {
             }
         }
     }
+
+    pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> eyre::Result<()> {
+        self.show_create_diff(root, buffer, commit_msg.is_some());
+        let commit_msg = match commit_msg {
+            Some(msg) => msg,
+            None => return Ok(()),
+        };
+        let repo_path = root.join(&self.reponame);
+        let pr_number = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
+        if pr_number != 0 {
+            warn!(
+                "Existing PR #{} found for repo: {}. Closing it and deleting branch before starting over.",
+                pr_number, self.reponame
+            );
+            git::close_pr(&self.reponame, pr_number)?;
+        }
+        git::delete_local_branch(&repo_path, &self.change_id)?;
+        git::delete_remote_branch(&repo_path, &self.change_id)?;
+        git::checkout_branch(&repo_path, &self.change_id)?;
+        git::stage_files(&repo_path)?;
+        if !git::is_working_tree_clean(&repo_path) {
+            git::commit_changes(&repo_path, commit_msg)?;
+            git::push_branch(&repo_path, &self.change_id)?;
+        } else {
+            log::info!("No changes to commit in '{}'", self.reponame);
+        }
+        git::create_pr(&repo_path, &self.change_id, commit_msg);
+        Ok(())
+    }
 }
 
 fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
@@ -167,7 +192,6 @@ fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
             matches.push(relative_path);
         }
     }
-
     Ok(matches)
 }
 
@@ -177,7 +201,6 @@ fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) 
             if commit {
                 let _ = std::fs::remove_file(full_path);
             }
-            // For deletions, we choose not to produce any diff output.
             None
         },
         Change::Sub(pattern, replacement) => {
@@ -213,36 +236,3 @@ fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) 
         },
     }
 }
-/*
-fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) -> Option<String> {
-    let content = read_to_string(full_path).ok()?;
-
-    let updated_content = match change {
-        Change::Sub(pattern, replacement) => {
-            if !content.contains(pattern) {
-                return None;
-            }
-            content.replace(pattern, replacement)
-        }
-        Change::Regex(pattern, replacement) => {
-            let regex = Regex::new(pattern).ok()?;
-            if !regex.is_match(&content) {
-                return None;
-            }
-            regex.replace_all(&content, replacement).to_string()
-        }
-    };
-
-    if updated_content == content {
-        return None;
-    }
-
-    let diff = diff::generate_diff(&content, &updated_content, buffer);
-
-    if commit {
-        let _ = write(full_path, &updated_content);
-    }
-
-    Some(diff)
-}
-*/

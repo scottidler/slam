@@ -294,64 +294,8 @@ fn process_create_command(
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
-    /*
     for repo in &filtered_repos {
-        repo.show_create_diff(&root, buffer, commit.is_some());
-        if let Some(commit_msg) = commit.as_deref() {
-            let repo_path = root.join(&repo.reponame);
-            // Switch to (or create) the branch named by change_id
-            git::checkout_branch(&repo_path, &change_id)?;
-            // Stage and commit the changes on that branch
-            git::stage_files(&repo_path)?;
-            if !git::is_working_tree_clean(&repo_path) {
-                git::commit_changes(&repo_path, commit_msg)?;
-                git::push_branch(&repo_path, &change_id)?;
-            }
-            // Check if a PR already exists for this branch
-            let pr_number = git::get_pr_number_for_repo(&repo.reponame, &change_id)?;
-            if pr_number != 0 {
-                warn!("Existing PR #{} found for repo: {}. Closing it before creating a new PR.", pr_number, repo.reponame);
-                git::close_pr(&repo.reponame, pr_number)?;
-            }
-            git::create_pr(&repo_path, &change_id, commit_msg);
-        }
-    }
-    */
-
-    for repo in &filtered_repos {
-        repo.show_create_diff(&root, buffer, commit.is_some());
-        if let Some(commit_msg) = commit.as_deref() {
-            let repo_path = root.join(&repo.reponame);
-
-            // First, check for an existing PR.
-            let pr_number = git::get_pr_number_for_repo(&repo.reponame, &change_id)?;
-            if pr_number != 0 {
-                warn!(
-                    "Existing PR #{} found for repo: {}. Closing it and deleting branch before starting over.",
-                    pr_number, repo.reponame
-                );
-                git::close_pr(&repo.reponame, pr_number)?;
-            }
-
-            // Delete any existing branch (both local and remote) for this change_id.
-            git::delete_local_branch(&repo_path, &change_id)?;
-            git::delete_remote_branch(&repo_path, &change_id)?;
-
-            // Now create and switch to a fresh branch.
-            git::checkout_branch(&repo_path, &change_id)?;
-
-            // Stage and commit changes on the new branch.
-            git::stage_files(&repo_path)?;
-            if !git::is_working_tree_clean(&repo_path) {
-                git::commit_changes(&repo_path, commit_msg)?;
-                git::push_branch(&repo_path, &change_id)?;
-            } else {
-                log::info!("No changes to commit in '{}'", repo.reponame);
-            }
-
-            // Finally, create the PR.
-            git::create_pr(&repo_path, &change_id, commit_msg);
-        }
+        repo.create(&root, buffer, commit.as_deref())?;
     }
 
     Ok(())

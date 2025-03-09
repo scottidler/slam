@@ -201,10 +201,8 @@ pub fn merge_pr(repo: &str, branch: &str, admin_override: bool) -> Result<()> {
 //-----------------------------------------------------------------------------------------------
 
 pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str) -> Option<String> {
-    // The PR title is the change_id.
     let title = change_id.to_string();
 
-    // The PR body: first line is the commit message, then a blank line, then the docs link.
     let body = format!(
         "{}\n\ndocs: https://github.com/scottidler/slam/blob/main/README.md",
         commit_msg
@@ -241,7 +239,6 @@ pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str)
 }
 
 pub fn close_pr(repo: &str, pr_number: u64) -> Result<()> {
-    // Log the current working directory to help diagnose the issue.
     let cwd: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("unknown"));
     debug!("close_pr: current working directory: {}", cwd.display());
 
@@ -311,7 +308,6 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
         change_id
     );
 
-    // Check current branch
     let head_output = Command::new("git")
         .current_dir(repo_path)
         .args(["symbolic-ref", "--short", "HEAD"])
@@ -335,7 +331,6 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
         current_branch
     );
 
-    // Check if our target branch already exists
     let branch_exists = Command::new("git")
         .current_dir(repo_path)
         .args(["rev-parse", "--verify", &change_id])
