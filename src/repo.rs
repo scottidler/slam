@@ -180,6 +180,24 @@ impl Repo {
         git::create_pr(&repo_path, &self.change_id, commit_msg);
         Ok(())
     }
+
+    pub fn review(&self, buffer: usize, approve: bool, merge: bool, admin_override: bool) -> eyre::Result<bool> {
+        self.show_review_diff(buffer);
+        if !approve {
+            log::info!("No approval flag set; skipping review actions for '{}'", self.reponame);
+            return Ok(false);
+        }
+        git::approve_pr(&self.reponame, &self.change_id)?;
+        log::info!("PR for '{}' approved.", self.reponame);
+        if merge {
+            git::merge_pr(&self.reponame, &self.change_id, admin_override)?;
+            log::info!("Successfully merged '{}'", self.reponame);
+            Ok(true)
+        } else {
+            log::info!("Merge flag not set; skipping merge for '{}'", self.reponame);
+            Ok(false)
+        }
+    }
 }
 
 fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {

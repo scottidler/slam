@@ -348,46 +348,24 @@ fn process_review_command(
         return Ok(());
     }
 
-    info!(
+    log::info!(
         "{} repositories have an open PR for '{}'",
         filtered_repos.len(),
         change_id
     );
 
-    let mut processed_count = 0;
+    let mut merged_count = 0;
     for repo in &filtered_repos {
-        repo.show_review_diff(buffer);
-
-        if !approve {
-            info!("No --approve flag, skipping review actions for '{}'", repo.reponame);
-            continue;
-        }
-
-        if let Err(e) = git::approve_pr(&repo.reponame, &repo.change_id) {
-            warn!("Failed to approve PR for '{}': {}. Skipping merge.", repo.reponame, e);
-            continue;
-        }
-
-        if !merge {
-            info!("No --merge flag, skipping merge for '{}'", repo.reponame);
-            continue;
-        }
-
-        match git::merge_pr(&repo.reponame, &repo.change_id, admin_override) {
-            Ok(_) => {
-                info!("Successfully merged '{}'", repo.reponame);
-                processed_count += 1;
-            }
-            Err(e) => {
-                warn!("Failed to merge PR for '{}': {}", repo.reponame, e);
-            }
+        // The review method displays the diff and handles approval/merging.
+        if repo.review(buffer, approve, merge, admin_override)? {
+            merged_count += 1;
         }
     }
 
     info!(
         "Review completed. PRs Approved: {}, PRs Merged: {}",
-        if approve { processed_count } else { 0 },
-        if merge { processed_count } else { 0 }
+        if approve { filtered_repos.len() } else { 0 },
+        if merge { merged_count } else { 0 }
     );
     Ok(())
 }
