@@ -294,10 +294,9 @@ fn process_create_command(
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
-    for repo in &filtered_repos {
-        repo.create(&root, buffer, commit.as_deref())?;
-    }
-
+    filtered_repos
+        .par_iter()
+        .try_for_each(|repo| repo.create(&root, buffer, commit.as_deref()))?;
     Ok(())
 }
 
@@ -354,12 +353,11 @@ fn process_review_command(
         change_id
     );
 
-    let mut merged_count = 0;
-    for repo in &filtered_repos {
-        if repo.review(buffer, approve, merge, admin_override)? {
-            merged_count += 1;
-        }
-    }
+    let merged_count: usize = filtered_repos
+        .par_iter()
+        .map(|repo| repo.review(buffer, approve, merge, admin_override)
+            .unwrap_or(false) as usize)
+        .sum();
 
     info!(
         "Review completed. PRs Approved: {}, PRs Merged: {}",
