@@ -97,24 +97,46 @@ impl Repo {
         }
     }
 
-    /// Display the diff for local file changes (used in the create flow).
     pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) {
         let repo_path = root.join(&self.reponame);
         println!("Repo: {}", self.reponame);
-        for file in &self.files {
-            let full_path = repo_path.join(file);
-            if let Some(change) = self.change.as_ref() {
-                if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                    println!("  Modified file: {}", file);
-                    for line in diff.lines() {
-                        println!("    {}", line);
+
+        if let Some(change) = self.change.as_ref() {
+            match change {
+                Change::Delete => {
+                    // For deletions, list the files to be deleted.
+                    for file in &self.files {
+                        println!("  Delete file: {}", file);
+                    }
+                    // Optionally, if commit is true, delete the files.
+                    if commit {
+                        for file in &self.files {
+                            let full_path = repo_path.join(file);
+                            let _ = std::fs::remove_file(&full_path);
+                        }
                     }
                 }
+                _ => {
+                    // For Sub and Regex changes, process files and display diffs.
+                    for file in &self.files {
+                        let full_path = repo_path.join(file);
+                        if let Some(diff) = process_file(&full_path, change, buffer, commit) {
+                            println!("  Modified file: {}", file);
+                            for line in diff.lines() {
+                                println!("    {}", line);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // If no change is specified, just list the matched files.
+            for file in &self.files {
+                println!("  Matched file: {}", file);
             }
         }
     }
 
-    /// Display the diff for a pull request (used in the review flow).
     pub fn show_review_diff(&self, buffer: usize) {
         println!("Repo: {}", self.reponame);
         match git::get_pr_diff(&self.reponame, self.pr_number) {
