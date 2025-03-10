@@ -84,21 +84,21 @@ fn main() -> Result<()> {
             let change = Change::from_args(delete, &sub, &regex);
             process_create_command(files, change, change_id, buffer, commit, repos)?;
         }
-        cli::SlamCommand::Review {
-            change_id,
-            org,
-            approve,
-            merge,
-            admin_override,
-            buffer,
-            repos,
-        } => {
-            process_review_command(org, change_id, approve, merge, admin_override, buffer, repos)?;
+        cli::SlamCommand::Review { org, repos, action } => {
+            process_review_command(org, &action, buffer_from_action(&action), repos)?;
         }
     }
 
     info!("SLAM execution complete.");
     Ok(())
+}
+
+/// Extract the buffer from the CLI Action variant.
+fn buffer_from_action(action: &cli::Action) -> usize {
+    match action {
+        cli::Action::Ls { buffer, .. } => *buffer,
+        _ => 1,
+    }
 }
 
 fn process_create_command(
@@ -130,7 +130,7 @@ fn process_create_command(
     let outputs: Vec<String> = filtered_repos
         .par_iter()
         .map(|repo| repo.create(&root, buffer, commit.as_deref()))
-        .collect::<Result<Vec<String>, _>>()?;
+        .collect::<eyre::Result<Vec<String>>>()?;
 
     for output in outputs {
         println!("{}", output);
@@ -140,15 +140,19 @@ fn process_create_command(
 
 fn process_review_command(
     org: String,
-    change_id: String,
-    approve: bool,
-    merge: bool,
-    admin_override: bool,
-    buffer: usize,
+    action: &cli::Action,
+    default_buffer: usize,
     user_repo_specs: Vec<String>,
 ) -> eyre::Result<()> {
+    // Extract change IDs to filter on from the CLI Action.
+    let filter_change_ids: Vec<String> = match action {
+        cli::Action::Ls { change_ids, .. } => change_ids.clone(),
+        cli::Action::Approve { change_id, .. } => vec![change_id.clone()],
+        cli::Action::Delete { change_id } => vec![change_id.clone()],
+    };
+
     let repo_names = git::find_repos_in_org(&org)?;
-    log::info!("Found {} repos in '{}'", repo_names.len(), org);
+    info!("Found {} repos in '{}'", repo_names.len(), org);
 
     let filtered_names: Vec<_> = repo_names
         .into_iter()
@@ -156,45 +160,53 @@ fn process_review_command(
             user_repo_specs.is_empty() || user_repo_specs.iter().any(|pat| full_name.contains(pat))
         })
         .collect();
-    log::info!("After user input filter, {} remain", filtered_names.len());
+    info!("After user input filter, {} remain", filtered_names.len());
 
+    // Use a parallel iterator to filter repositories that have an open PR matching one of the change IDs.
     let mut filtered_repos: Vec<Repo> = filtered_names
         .par_iter()
         .filter_map(|repo_name| {
-            match git::get_pr_number_for_repo(repo_name, &change_id) {
-                Ok(pr_number) if pr_number > 0 => {
-                    info!("Found PR #{} for repo '{}'", pr_number, repo_name);
-                    Some(Repo::create_repo_from_remote_with_pr(repo_name, &change_id, pr_number))
-                }
-                Ok(_) => {
-                    debug!("No open PR found for '{}'", repo_name);
-                    None
-                }
-                Err(err) => {
-                    warn!("Error fetching PR for '{}': {}", repo_name, err);
-                    None
+            for cid in &filter_change_ids {
+                match git::get_pr_number_for_repo(repo_name, cid) {
+                    Ok(pr_number) if pr_number > 0 => {
+                        info!(
+                            "Found PR #{} for repo '{}' (change id: {})",
+                            pr_number, repo_name, cid
+                        );
+                        return Some(Repo::create_repo_from_remote_with_pr(repo_name, cid, pr_number));
+                    }
+                    Ok(_) => {
+                        debug!("No open PR found for '{}' with change id '{}'", repo_name, cid);
+                    }
+                    Err(err) => {
+                        warn!("Error fetching PR for '{}': {}", repo_name, err);
+                    }
                 }
             }
+            None
         })
         .collect();
 
     filtered_repos.sort_by(|a, b| a.reponame.cmp(&b.reponame));
 
     if filtered_repos.is_empty() {
-        warn!("No repositories found with an open PR for '{}'", change_id);
+        warn!(
+            "No repositories found with an open PR matching change id(s): {:?}",
+            filter_change_ids
+        );
         return Ok(());
     }
 
-    log::info!(
-        "{} repositories have an open PR for '{}'",
+    info!(
+        "{} repositories have an open PR matching change id(s): {:?}",
         filtered_repos.len(),
-        change_id
+        filter_change_ids
     );
 
     let outputs: Vec<String> = filtered_repos
         .par_iter()
-        .map(|repo| repo.review(buffer, approve, merge, admin_override))
-        .collect::<Result<Vec<String>, _>>()?;
+        .map(|repo| repo.review(action, default_buffer))
+        .collect::<eyre::Result<Vec<String>>>()?;
 
     for output in outputs {
         println!("{}", output);

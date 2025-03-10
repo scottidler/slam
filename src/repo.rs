@@ -3,6 +3,7 @@ use log::{info, debug, warn};
 use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 
+use crate::cli;
 use crate::git;
 use crate::diff;
 
@@ -108,7 +109,6 @@ impl Repo {
                     for file in &self.files {
                         output.push_str(&format!("  Delete file: {}\n", file));
                         let full_path = repo_path.join(file);
-                        // Read file content to generate a deletion diff (every line removed)
                         match std::fs::read_to_string(&full_path) {
                             Ok(content) => {
                                 let diff = diff::generate_diff(&content, "", buffer);
@@ -148,27 +148,7 @@ impl Repo {
         output
     }
 
-    pub fn get_review_diff(&self, buffer: usize) -> String {
-        let mut output = String::new();
-        output.push_str(&format!("Repo: {}\n", self.reponame));
-        match git::get_pr_diff(&self.reponame, self.pr_number) {
-            Ok(diff_text) => {
-                let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
-                for (filename, orig_text, upd_text) in file_patches {
-                    output.push_str(&format!("  Modified file: {}\n", filename));
-                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
-                    for line in colored_diff.lines() {
-                        output.push_str(&format!("    {}\n", line));
-                    }
-                }
-            }
-            Err(e) => {
-                output.push_str(&format!("  (Could not fetch PR diff: {})\n", e));
-            }
-        }
-        output
-    }
-
+    /// Create a PR for this repo.
     pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> Result<String> {
         let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
         let commit_msg = match commit_msg {
@@ -199,21 +179,45 @@ impl Repo {
         Ok(diff_output)
     }
 
-    pub fn review(&self, buffer: usize, approve: bool, merge: bool, admin_override: bool) -> Result<String> {
-        let diff_output = self.get_review_diff(buffer);
-        if !approve {
-            info!("No approval flag set; skipping review actions for '{}'", self.reponame);
-            return Ok(diff_output);
+    /// Review a PR based on the CLI Action.
+    pub fn review(&self, action: &cli::Action, buffer: usize) -> Result<String> {
+        match action {
+            crate::cli::Action::Ls { .. } => {
+                Ok(self.get_review_diff(buffer))
+            }
+            crate::cli::Action::Approve { admin_override, .. } => {
+                git::approve_pr(&self.reponame, &self.change_id)?;
+                info!("PR for '{}' approved.", self.reponame);
+                git::merge_pr(&self.reponame, &self.change_id, *admin_override)?;
+                info!("Successfully merged '{}'", self.reponame);
+                Ok(self.get_review_diff(buffer))
+            }
+            crate::cli::Action::Delete { .. } => {
+                info!("Delete action selected for '{}'; stub not implemented.", self.reponame);
+                Ok(format!("Delete stub for repo '{}'", self.reponame))
+            }
         }
-        git::approve_pr(&self.reponame, &self.change_id)?;
-        info!("PR for '{}' approved.", self.reponame);
-        if merge {
-            git::merge_pr(&self.reponame, &self.change_id, admin_override)?;
-            info!("Successfully merged '{}'", self.reponame);
-        } else {
-            info!("Merge flag not set; skipping merge for '{}'", self.reponame);
+    }
+
+    pub fn get_review_diff(&self, buffer: usize) -> String {
+        let mut output = String::new();
+        output.push_str(&format!("Repo: {}\n", self.reponame));
+        match git::get_pr_diff(&self.reponame, self.pr_number) {
+            Ok(diff_text) => {
+                let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
+                for (filename, orig_text, upd_text) in file_patches {
+                    output.push_str(&format!("  Modified file: {}\n", filename));
+                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
+                    for line in colored_diff.lines() {
+                        output.push_str(&format!("    {}\n", line));
+                    }
+                }
+            }
+            Err(e) => {
+                output.push_str(&format!("  (Could not fetch PR diff: {})\n", e));
+            }
         }
-        Ok(diff_output)
+        output
     }
 }
 

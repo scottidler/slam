@@ -1,4 +1,4 @@
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use chrono::Local;
 
 pub fn default_change_id() -> String {
@@ -20,7 +20,6 @@ pub struct SlamCli {
 #[derive(Subcommand, Debug)]
 pub enum SlamCommand {
     #[command(alias = "alleyoop")]
-    #[command(group = ArgGroup::new("change").required(false).args(["delete", "sub", "regex"]))]
     Create {
         #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
         files: Option<String>,
@@ -77,14 +76,6 @@ pub enum SlamCommand {
 
     Review {
         #[arg(
-            short = 'x',
-            long,
-            help = "Change ID used to find PRs (default: 'SLAM-<YYYY-MM-DD>')",
-            default_value_t = default_change_id()
-        )]
-        change_id: String,
-
-        #[arg(
             short = 'o',
             long,
             default_value = "tatari-tv",
@@ -92,14 +83,30 @@ pub enum SlamCommand {
         )]
         org: String,
 
-        #[arg(long, help = "Add an approving review to each PR")]
-        approve: bool,
+        #[arg(
+            short = 'r',
+            long,
+            help = "Repository names to filter",
+            default_value = ""
+        )]
+        repos: Vec<String>,
 
-        #[arg(long, help = "Attempt to merge the PR after approving (if checks pass)")]
-        merge: bool,
+        // Remove `pub` here:
+        #[command(subcommand)]
+        action: Action,
+    },
+}
 
-        #[arg(long, help = "Pass `--admin` to `gh pr merge` to bypass failing checks")]
-        admin_override: bool,
+#[derive(Subcommand, Debug)]
+pub enum Action {
+    /// List PRs matching change IDs – change IDs are optional, and if not provided then all open PRs are listed
+    Ls {
+        #[arg(
+            value_name = "CHANGE_ID",
+            num_args = 0..,
+            help = "Optional list of change IDs to filter by"
+        )]
+        change_ids: Vec<String>,
 
         #[arg(
             short = 'b',
@@ -108,9 +115,30 @@ pub enum SlamCommand {
             help = "Number of context lines in the diff output"
         )]
         buffer: usize,
+    },
 
-        #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
-        repos: Vec<String>,
+    /// Approve a PR (and optionally merge it)
+    Approve {
+        #[arg(
+            value_name = "CHANGE_ID",
+            help = "Change ID used to find the PR"
+        )]
+        change_id: String,
+
+        #[arg(
+            long,
+            help = "Pass `--admin` to `gh pr merge` to bypass failing checks"
+        )]
+        admin_override: bool,
+    },
+
+    /// Delete a PR (stub for now)
+    Delete {
+        #[arg(
+            value_name = "CHANGE_ID",
+            help = "Change ID used to find the PR to delete"
+        )]
+        change_id: String,
     },
 }
 
