@@ -81,7 +81,7 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
     }
     results
 }
-
+/*
 /// generate_diff takes two full texts and produces a colorized diff.
 /// Since the reconstructed files now have exactly the line numbers indicated by the hunk headers,
 /// the diff output will show matching line numbers.
@@ -120,3 +120,52 @@ pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
     }
     result
 }
+*/
+pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
+    // Special-case deletion: if updated is empty, generate a deletion diff for every line.
+    if updated.is_empty() {
+        let mut result = String::new();
+        for (i, line) in original.lines().enumerate() {
+            result.push_str(&format!(
+                "{} | {}\n",
+                format!("-{:4}", i + 1).red(),
+                line.red()
+            ));
+        }
+        return result;
+    }
+    let diff = TextDiff::from_lines(original, updated);
+    let mut result = String::new();
+
+    for group in diff.grouped_ops(buffer) {
+        for op in group {
+            for change in diff.iter_changes(&op) {
+                match change.tag() {
+                    ChangeTag::Delete => {
+                        result.push_str(&format!(
+                            "{} | {}\n",
+                            format!("-{:4}", change.old_index().unwrap() + 1).red(),
+                            change.to_string().trim_end().red()
+                        ));
+                    }
+                    ChangeTag::Insert => {
+                        result.push_str(&format!(
+                            "{} | {}\n",
+                            format!("+{:4}", change.new_index().unwrap() + 1).green(),
+                            change.to_string().trim_end().green()
+                        ));
+                    }
+                    ChangeTag::Equal => {
+                        result.push_str(&format!(
+                            "{} | {}\n",
+                            format!(" {:4}", change.old_index().unwrap() + 1).dimmed(),
+                            change.to_string().trim_end().dimmed()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
