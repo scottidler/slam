@@ -2,16 +2,6 @@ use colored::*;
 use similar::{ChangeTag, TextDiff};
 use regex::Regex;
 
-/// Given a unified diff (as produced by `gh pr diff --patch`), this function reconstructs a list of tuples,
-/// one per file in the diff. Each tuple contains:
-///   (filename, reconstructed original file text, reconstructed updated file text)
-///
-/// To ensure that the line numbers in the final colorized diff match the hunk offsets, we insert blank lines
-/// for any missing portions. Specifically, for each hunk header of the form:
-///   @@ -orig_start,orig_count +upd_start,upd_count @@
-/// we compute the gap between the expected next line and the hunk start and insert that many blank lines.
-/// (Note: even if the gap is greater than 3, we insert all the missing lines so that the internal line
-/// numbers in the reconstructed file are correct.)
 pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, String, String)> {
     let mut results = Vec::new();
     let mut current_filename = String::new();
@@ -81,48 +71,8 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
     }
     results
 }
-/*
-/// generate_diff takes two full texts and produces a colorized diff.
-/// Since the reconstructed files now have exactly the line numbers indicated by the hunk headers,
-/// the diff output will show matching line numbers.
-pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
-    let diff = TextDiff::from_lines(original, updated);
-    let mut result = String::new();
 
-    for group in diff.grouped_ops(buffer) {
-        for op in group {
-            for change in diff.iter_changes(&op) {
-                match change.tag() {
-                    ChangeTag::Delete => {
-                        result.push_str(&format!(
-                            "{} | {}\n",
-                            format!("-{:4}", change.old_index().unwrap() + 1).red(),
-                            change.to_string().trim_end().red()
-                        ));
-                    }
-                    ChangeTag::Insert => {
-                        result.push_str(&format!(
-                            "{} | {}\n",
-                            format!("+{:4}", change.new_index().unwrap() + 1).green(),
-                            change.to_string().trim_end().green()
-                        ));
-                    }
-                    ChangeTag::Equal => {
-                        result.push_str(&format!(
-                            "{} | {}\n",
-                            format!(" {:4}", change.old_index().unwrap() + 1).dimmed(),
-                            change.to_string().trim_end().dimmed()
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    result
-}
-*/
 pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
-    // Special-case deletion: if updated is empty, generate a deletion diff for every line.
     if updated.is_empty() {
         let mut result = String::new();
         for (i, line) in original.lines().enumerate() {
