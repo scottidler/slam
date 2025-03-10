@@ -168,7 +168,28 @@ impl Repo {
         }
         output
     }
-
+/*
+    pub fn get_review_diff(&self, buffer: usize) -> String {
+        let mut output = String::new();
+        output.push_str(&format!("Repo: {}\n", self.reponame));
+        match git::get_pr_diff(&self.reponame, self.pr_number) {
+            Ok(diff_text) => {
+                let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
+                for (filename, orig_text, upd_text) in file_patches {
+                    output.push_str(&format!("  Modified file: {}\n", filename));
+                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
+                    for line in colored_diff.lines() {
+                        output.push_str(&format!("    {}\n", line));
+                    }
+                }
+            }
+            Err(e) => {
+                output.push_str(&format!("  (Could not fetch PR diff: {})\n", e));
+            }
+        }
+        output
+    }
+*/
     pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> Result<String> {
         let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
         let commit_msg = match commit_msg {
