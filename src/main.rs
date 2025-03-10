@@ -357,16 +357,13 @@ fn process_review_command(
         change_id
     );
 
-    let merged_count: usize = filtered_repos
+    let outputs: Vec<String> = filtered_repos
         .par_iter()
-        .map(|repo| repo.review(buffer, approve, merge, admin_override)
-            .unwrap_or(false) as usize)
-        .sum();
+        .map(|repo| repo.review(buffer, approve, merge, admin_override))
+        .collect::<Result<Vec<String>, _>>()?;
 
-    info!(
-        "Review completed. PRs Approved: {}, PRs Merged: {}",
-        if approve { filtered_repos.len() } else { 0 },
-        if merge { merged_count } else { 0 }
-    );
+    for output in outputs {
+        println!("{}", output);
+    }
     Ok(())
 }
