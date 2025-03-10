@@ -293,10 +293,14 @@ fn process_create_command(
         })
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
-
-    filtered_repos
+    let outputs: Vec<String> = filtered_repos
         .par_iter()
-        .try_for_each(|repo| repo.create(&root, buffer, commit.as_deref()))?;
+        .map(|repo| repo.create(&root, buffer, commit.as_deref()))
+        .collect::<Result<Vec<String>, _>>()?;
+
+    for output in outputs {
+        println!("{}", output);
+    }
     Ok(())
 }
 

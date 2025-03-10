@@ -97,15 +97,29 @@ impl Repo {
         }
     }
 
-    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) {
+    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) -> String {
+        let mut output = String::new();
         let repo_path = root.join(&self.reponame);
-        println!("Repo: {}", self.reponame);
+        output.push_str(&format!("Repo: {}\n", self.reponame));
 
         if let Some(change) = self.change.as_ref() {
             match change {
                 Change::Delete => {
                     for file in &self.files {
-                        println!("  Delete file: {}", file);
+                        output.push_str(&format!("  Delete file: {}\n", file));
+                        let full_path = repo_path.join(file);
+                        // Read file content to generate a deletion diff (every line removed)
+                        match std::fs::read_to_string(&full_path) {
+                            Ok(content) => {
+                                let diff = diff::generate_diff(&content, "", buffer);
+                                for line in diff.lines() {
+                                    output.push_str(&format!("    {}\n", line));
+                                }
+                            }
+                            Err(err) => {
+                                output.push_str(&format!("    (Could not read file for diff: {})\n", err));
+                            }
+                        }
                     }
                     if commit {
                         for file in &self.files {
@@ -118,9 +132,9 @@ impl Repo {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            println!("  Modified file: {}", file);
+                            output.push_str(&format!("  Modified file: {}\n", file));
                             for line in diff.lines() {
-                                println!("    {}", line);
+                                output.push_str(&format!("    {}\n", line));
                             }
                         }
                     }
@@ -128,9 +142,10 @@ impl Repo {
             }
         } else {
             for file in &self.files {
-                println!("  Matched file: {}", file);
+                output.push_str(&format!("  Matched file: {}\n", file));
             }
         }
+        output
     }
 
     pub fn show_review_diff(&self, buffer: usize) {
@@ -152,12 +167,13 @@ impl Repo {
         }
     }
 
-    pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> eyre::Result<()> {
-        self.show_create_diff(root, buffer, commit_msg.is_some());
+    pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> eyre::Result<String> {
+        let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
         let commit_msg = match commit_msg {
             Some(msg) => msg,
-            None => return Ok(()),
+            None => return Ok(diff_output),
         };
+
         let repo_path = root.join(&self.reponame);
         let pr_number = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
         if pr_number != 0 {
@@ -178,7 +194,7 @@ impl Repo {
             log::info!("No changes to commit in '{}'", self.reponame);
         }
         git::create_pr(&repo_path, &self.change_id, commit_msg);
-        Ok(())
+        Ok(diff_output)
     }
 
     pub fn review(&self, buffer: usize, approve: bool, merge: bool, admin_override: bool) -> eyre::Result<bool> {
