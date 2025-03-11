@@ -91,7 +91,6 @@ pub enum SlamCommand {
         )]
         repos: Vec<String>,
 
-        // Remove `pub` here:
         #[command(subcommand)]
         action: Action,
     },
@@ -99,14 +98,14 @@ pub enum SlamCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// List PRs matching change IDs – change IDs are optional, and if not provided then all open PRs are listed
     Ls {
         #[arg(
-            value_name = "CHANGE_ID",
+            value_name = "CHANGE_ID_PTNS",
+            default_value = "SLAM*",
             num_args = 0..,
-            help = "Optional list of change IDs to filter by"
+            help = "Optional list of change IDs to filter by. Uses prefix matching (e.g. change IDs starting with SLAM)"
         )]
-        change_ids: Vec<String>,
+        change_id_ptns: Vec<String>,
 
         #[arg(
             short = 'b',
@@ -117,11 +116,10 @@ pub enum Action {
         buffer: usize,
     },
 
-    /// Approve a PR (and optionally merge it)
     Approve {
         #[arg(
             value_name = "CHANGE_ID",
-            help = "Change ID used to find the PR"
+            help = "Change ID used to find the PR (exact match required)"
         )]
         change_id: String,
 
@@ -132,11 +130,10 @@ pub enum Action {
         admin_override: bool,
     },
 
-    /// Delete a PR (stub for now)
     Delete {
         #[arg(
             value_name = "CHANGE_ID",
-            help = "Change ID used to find the PR to delete"
+            help = "Change ID used to find the PR to delete (exact match required)"
         )]
         change_id: String,
     },

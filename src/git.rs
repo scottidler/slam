@@ -1,8 +1,13 @@
 use eyre::{eyre, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::process::{Command, Output};
 use log::{info, debug, warn, error};
+use rayon::iter::{
+    IntoParallelIterator,
+    ParallelIterator,
+};
 
 fn git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
@@ -71,7 +76,12 @@ pub fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
 
 pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
     let output = Command::new("gh")
-        .args(["repo", "list", org, "--limit", "1000", "--json", "name"])
+        .args([
+            "repo",
+            "list", org,
+            "--limit", "1000",
+            "--json", "name,isArchived",
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -79,16 +89,22 @@ pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
     }
 
     let parsed: Value = serde_json::from_slice(&output.stdout)?;
-    let repos = parsed
+    let repos: Vec<String> = parsed
         .as_array()
         .unwrap_or(&vec![])
         .iter()
-        .filter_map(|repo| repo.get("name").and_then(Value::as_str))
-        .map(|name| format!("{}/{}", org, name))
+        .filter_map(|repo| {
+            if repo.get("isArchived").and_then(Value::as_bool).unwrap_or(false) {
+                None
+            } else {
+                repo.get("name").and_then(Value::as_str).map(|name| format!("{}/{}", org, name))
+            }
+        })
         .collect();
 
     Ok(repos)
 }
+
 
 pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     let output = Command::new("gh")
@@ -115,6 +131,54 @@ pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
         .unwrap_or(0);
 
     Ok(pr_number)
+}
+
+pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String, Vec<(String, u64)>>> {
+    let results: Vec<HashMap<String, Vec<(String, u64)>>> = reposlugs
+        .into_par_iter()
+        .map(|reposlug: String| {
+            let output = Command::new("gh")
+                .args(&[
+                    "pr", "list",
+                    "--repo", &reposlug,
+                    "--state", "open",
+                    "--json", "title,number",
+                    "--limit", "100",
+                ])
+                .output();
+            if let Ok(output) = output {
+                if output.status.success() {
+                    if let Ok(parsed) = serde_json::from_slice::<Value>(&output.stdout) {
+                        if let Some(arr) = parsed.as_array() {
+                            let mut map = HashMap::new();
+                            for pr_obj in arr {
+                                if let (Some(title), Some(number)) = (
+                                    pr_obj.get("title").and_then(Value::as_str),
+                                    pr_obj.get("number").and_then(Value::as_u64),
+                                ) {
+                                    map.entry(title.to_string())
+                                        .or_insert_with(Vec::new)
+                                        .push((reposlug.clone(), number));
+                                }
+                            }
+                            return map;
+                        }
+                    }
+                } else {
+                    log::debug!("gh pr list failed for repo '{}'", reposlug);
+                }
+            }
+            HashMap::new()
+        })
+        .collect();
+
+    let final_map = results.into_iter().fold(HashMap::new(), |mut acc, hm| {
+        for (title, vec) in hm {
+            acc.entry(title).or_insert_with(Vec::new).extend(vec);
+        }
+        acc
+    });
+    Ok(final_map)
 }
 
 pub fn get_pr_diff(reposlug: &str, pr_number: u64) -> Result<String> {

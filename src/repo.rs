@@ -148,7 +148,6 @@ impl Repo {
         output
     }
 
-    /// Create a PR for this repo.
     pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> Result<String> {
         let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
         let commit_msg = match commit_msg {
@@ -179,20 +178,23 @@ impl Repo {
         Ok(diff_output)
     }
 
-    /// Review a PR based on the CLI Action.
-    pub fn review(&self, action: &cli::Action, buffer: usize) -> Result<String> {
+    pub fn review(&self, action: &cli::Action, summary: bool) -> Result<String> {
         match action {
-            crate::cli::Action::Ls { .. } => {
-                Ok(self.get_review_diff(buffer))
+            cli::Action::Ls { buffer, .. } => {
+                if summary {
+                    Ok(format!("Repo: {} -> PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
+                } else {
+                    Ok(self.get_review_diff(*buffer))
+                }
             }
-            crate::cli::Action::Approve { admin_override, .. } => {
+            cli::Action::Approve { admin_override: _, .. } => {
                 git::approve_pr(&self.reponame, &self.change_id)?;
                 info!("PR for '{}' approved.", self.reponame);
-                git::merge_pr(&self.reponame, &self.change_id, *admin_override)?;
+                git::merge_pr(&self.reponame, &self.change_id, false)?;
                 info!("Successfully merged '{}'", self.reponame);
-                Ok(self.get_review_diff(buffer))
+                Ok(format!("Repo: {} -> Approved PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }
-            crate::cli::Action::Delete { .. } => {
+            cli::Action::Delete { .. } => {
                 info!("Delete action selected for '{}'; stub not implemented.", self.reponame);
                 Ok(format!("Delete stub for repo '{}'", self.reponame))
             }
