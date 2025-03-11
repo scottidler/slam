@@ -235,11 +235,14 @@ fn process_review_command(
     let summary = matches!(action, cli::Action::Ls { .. }) && filtered_pr_map.len() > 1;
     if summary {
         for (change_id, repo_infos) in &filtered_pr_map {
-            let repo_list = repo_infos
-                .iter()
-                .map(|(repo, pr)| format!("{} (# {})", repo, pr))
-                .join(", ");
-            println!("Change ID '{}': {}", change_id, repo_list);
+            // Print the change ID without quotes, followed by a literal "(pr_name)"
+            println!("{} (pr_name)", change_id);
+            // For each repo, print the reposlug indented two spaces and the PR number in parentheses.
+            for (repo, pr) in repo_infos {
+                println!("  {} (# {})", repo, pr);
+            }
+            // Optionally add a blank line between groups
+            println!();
         }
         return Ok(());
     }
