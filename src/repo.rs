@@ -101,13 +101,13 @@ impl Repo {
     pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) -> String {
         let mut output = String::new();
         let repo_path = root.join(&self.reponame);
-        output.push_str(&format!("Repo: {}\n", self.reponame));
+        output.push_str(&format!("{}\n", self.reponame));
 
         if let Some(change) = self.change.as_ref() {
             match change {
                 Change::Delete => {
                     for file in &self.files {
-                        output.push_str(&format!("  Delete file: {}\n", file));
+                        output.push_str(&format!("  D {}\n", file));
                         let full_path = repo_path.join(file);
                         match std::fs::read_to_string(&full_path) {
                             Ok(content) => {
@@ -132,7 +132,7 @@ impl Repo {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            output.push_str(&format!("  Modified file: {}\n", file));
+                            output.push_str(&format!("  M {}\n", file));
                             for line in diff.lines() {
                                 output.push_str(&format!("    {}\n", line));
                             }
@@ -182,7 +182,8 @@ impl Repo {
         match action {
             cli::Action::Ls { buffer, .. } => {
                 if summary {
-                    Ok(format!("Repo: {} -> PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
+                    //Ok(format!("Repo: {} -> PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
+                    Ok(format!("{} (# {})", self.reponame, self.pr_number))
                 } else {
                     Ok(self.get_review_diff(*buffer))
                 }
@@ -203,12 +204,12 @@ impl Repo {
 
     pub fn get_review_diff(&self, buffer: usize) -> String {
         let mut output = String::new();
-        output.push_str(&format!("Repo: {}\n", self.reponame));
+        output.push_str(&format!("{}\n", self.reponame));
         match git::get_pr_diff(&self.reponame, self.pr_number) {
             Ok(diff_text) => {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
                 for (filename, orig_text, upd_text) in file_patches {
-                    output.push_str(&format!("  Modified file: {}\n", filename));
+                    output.push_str(&format!("  M {}\n", filename));
                     let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
                     for line in colored_diff.lines() {
                         output.push_str(&format!("    {}\n", line));
