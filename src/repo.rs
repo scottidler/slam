@@ -101,29 +101,26 @@ impl Repo {
 
     pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) -> String {
         let mut output = String::new();
-        // Print the repository slug with 2-space indent.
-        output.push_str(&format!("{}\n", utils::indent(&self.reponame, 2)));
+        output.push_str(&format!("{}\n", self.reponame));
 
         let repo_path = root.join(&self.reponame);
         if let Some(change) = self.change.as_ref() {
             match change {
                 Change::Delete => {
                     for file in &self.files {
-                        // File header: indicator "D" with 4-space indent.
-                        output.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 4)));
+                        output.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 2)));
                         let full_path = repo_path.join(file);
                         match std::fs::read_to_string(&full_path) {
                             Ok(content) => {
                                 let diff = diff::generate_diff(&content, "", buffer);
-                                // Diff block lines indented 6 spaces.
                                 for line in diff.lines() {
-                                    output.push_str(&format!("{}\n", utils::indent(line, 6)));
+                                    output.push_str(&format!("{}\n", utils::indent(line, 4)));
                                 }
                             }
                             Err(err) => {
                                 output.push_str(&format!(
                                     "{}\n",
-                                    utils::indent(&format!("(Could not read file for diff: {})", err), 4)
+                                    utils::indent(&format!("(Could not read file for diff: {})", err), 2)
                                 ));
                             }
                         }
@@ -139,9 +136,9 @@ impl Repo {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            output.push_str(&format!("{}\n", utils::indent(&format!("M {}", file), 4)));
+                            output.push_str(&format!("{}\n", utils::indent(&format!("M {}", file), 2)));
                             for line in diff.lines() {
-                                output.push_str(&format!("{}\n", utils::indent(line, 6)));
+                                output.push_str(&format!("{}\n", utils::indent(line, 4)));
                             }
                         }
                     }
@@ -149,7 +146,7 @@ impl Repo {
             }
         } else {
             for file in &self.files {
-                output.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 4)));
+                output.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
             }
         }
         output
