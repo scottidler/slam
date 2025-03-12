@@ -26,8 +26,14 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
             upd_lines.clear();
             next_orig_line = 1;
             next_upd_line = 1;
-        } else if line.starts_with("+++ b/") {
-            current_filename = line.trim_start_matches("+++ b/").to_string();
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                current_filename = parts[2].trim_start_matches("a/").to_string();
+            }
+        } else if line.starts_with("+++ ") {
+            if line.trim() != "+++ /dev/null" {
+                current_filename = line.trim_start_matches("+++ b/").to_string();
+            }
         } else if let Some(caps) = hunk_header_re.captures(line) {
             let hunk_orig_start: usize = caps.get(1).unwrap().as_str().parse().unwrap();
             let hunk_upd_start: usize = caps.get(3).unwrap().as_str().parse().unwrap();

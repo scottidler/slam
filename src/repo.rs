@@ -207,59 +207,17 @@ impl Repo {
 
     pub fn get_review_diff(&self, buffer: usize) -> String {
         let mut output = String::new();
-        output.push_str(&format!("{}\n", self.reponame));
+        output.push_str(&format!("Repo: {}\n", self.reponame));
         match git::get_pr_diff(&self.reponame, self.pr_number) {
             Ok(diff_text) => {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
                 for (filename, orig_text, upd_text) in file_patches {
-                    output.push_str(&format!("{}\n", utils::indent(&format!("M {}", filename), 2)));
-                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
-                    for line in colored_diff.lines() {
-                        output.push_str(&format!("{}\n", utils::indent(line, 4)));
-                    }
-                }
-            }
-            Err(e) => {
-                output.push_str(&format!(
-                    "{}\n",
-                    utils::indent(&format!("(Could not fetch PR diff: {})", e), 2)
-                ));
-            }
-        }
-        output
-    }
-    /*
-    pub fn get_review_diff(&self, buffer: usize) -> String {
-        let mut output = String::new();
-        output.push_str(&format!("{}\n", self.reponame));
-        match git::get_pr_diff(&self.reponame, self.pr_number) {
-            Ok(diff_text) => {
-                let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
-                for (filename, orig_text, upd_text) in file_patches {
-                    output.push_str(&format!("M {}\n", filename));
-                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
-                    for line in colored_diff.lines() {
-                        output.push_str(&format!("{}\n", line));
-                    }
-                }
-            }
-            Err(e) => {
-                output.push_str(&format!("(Could not fetch PR diff: {})\n", e));
-            }
-        }
-        output
-    }
-    */
-    /*
-    pub fn get_review_diff(&self, buffer: usize) -> String {
-        let mut output = String::new();
-        output.push_str(&format!("{}\n", self.reponame));
-        match git::get_pr_diff(&self.reponame, self.pr_number) {
-            Ok(diff_text) => {
-                let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
-                for (filename, orig_text, upd_text) in file_patches {
-                    output.push_str(&format!("  M {}\n", filename));
-                    let colored_diff = diff::generate_diff(&orig_text, &upd_text, buffer);
+                    output.push_str(&format!("  Modified file: {}\n", filename));
+                    let colored_diff = if upd_text.trim().is_empty() {
+                        diff::generate_diff(&orig_text, "", buffer)
+                    } else {
+                        diff::generate_diff(&orig_text, &upd_text, buffer)
+                    };
                     for line in colored_diff.lines() {
                         output.push_str(&format!("    {}\n", line));
                     }
@@ -271,7 +229,6 @@ impl Repo {
         }
         output
     }
-    */
 }
 
 fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
