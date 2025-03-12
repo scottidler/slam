@@ -212,7 +212,8 @@ impl Repo {
             Ok(diff_text) => {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
                 for (filename, orig_text, upd_text) in file_patches {
-                    output.push_str(&format!("{}\n", utils::indent(&format!("M {}", filename), 2)));
+                    let indicator = if upd_text.trim().is_empty() { "D" } else { "M" };
+                    output.push_str(&format!("{}\n", utils::indent(&format!("{} {}", indicator, filename), 2)));
                     let colored_diff = if upd_text.trim().is_empty() {
                         diff::generate_diff(&orig_text, "", buffer)
                     } else {
