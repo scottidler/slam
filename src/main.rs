@@ -121,6 +121,49 @@ fn process_create_command(
         })
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
+
+    // Gather diff outputs from each repo.
+    let outputs: Vec<String> = filtered_repos
+        .par_iter()
+        .map(|repo| repo.create(&root, buffer, commit.as_deref()))
+        .collect::<eyre::Result<Vec<String>>>()?;
+
+    // Print one single change_id header.
+    println!("{}", change_id);
+    // Then print each repo's diff output.
+    for output in outputs {
+        //println!("{}\n", output); FIXME: reenable this
+        println!("{}", output);
+    }
+    Ok(())
+}
+/*
+fn process_create_command(
+    files: Option<String>,
+    change: Option<Change>,
+    change_id: String,
+    buffer: usize,
+    commit: Option<String>,
+    user_repo_specs: Vec<String>,
+) -> eyre::Result<()> {
+    let root = std::env::current_dir()?;
+    let discovered_paths = git::find_git_repositories(&root)?;
+
+    let mut discovered_repos = Vec::new();
+    for path in discovered_paths {
+        if let Some(repo) = Repo::create_repo_from_local(&path, &root, &change, &files, &change_id) {
+            discovered_repos.push(repo);
+        }
+    }
+
+    let filtered_repos: Vec<_> = discovered_repos
+        .into_iter()
+        .filter(|repo| {
+            user_repo_specs.is_empty()
+                || user_repo_specs.iter().any(|spec| repo.reponame.contains(spec))
+        })
+        .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
+        .collect();
     let outputs: Vec<String> = filtered_repos
         .par_iter()
         .map(|repo| repo.create(&root, buffer, commit.as_deref()))
@@ -131,6 +174,7 @@ fn process_create_command(
     }
     Ok(())
 }
+*/
 
 fn filter_repos(all_reposlugs: Vec<String>, reposlug_ptns: Vec<String>) -> Vec<String> {
     if reposlug_ptns.is_empty() || reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
@@ -256,7 +300,7 @@ fn process_review_command(
     for (change_id, repo_outputs) in output_groups {
         println!("{}", change_id);
         for output in repo_outputs {
-            println!("{}", utils::indent(&output, 2));
+            println!("{}\n", utils::indent(&output, 2));
         }
         println!();
     }
