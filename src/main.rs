@@ -21,6 +21,7 @@ mod cli;
 mod git;
 mod diff;
 mod repo;
+mod utils;
 
 use cli::{SlamCli, get_cli_tool_status};
 use repo::{Change, Repo};
@@ -52,7 +53,6 @@ fn main() -> Result<()> {
         Box::new(io::stdout())
     };
 
-    // Use env_logger::Env to configure the log level from the RUST_LOG env var.
     let env = env_logger::Env::default().filter_or("RUST_LOG", "info");
     env_logger::Builder::from_env(env)
         .target(env_logger::Target::Pipe(log_writer))
@@ -231,44 +231,34 @@ fn process_review_command(
         return Ok(());
     }
 
-    // 6. Check if multiple change IDs exist for Ls mode, meaning we should use summary mode.
     let summary = matches!(action, cli::Action::Ls { .. }) && filtered_pr_map.len() > 1;
-    if summary {
-        for (change_id, repo_infos) in &filtered_pr_map {
-            // Print the change ID without quotes
-            println!("{}", change_id);
-            // For each repo, print the reposlug indented two spaces and the PR number in parentheses.
-            for (repo, pr) in repo_infos {
-                println!("  {} (# {})", repo, pr);
-            }
-            // Optionally add a blank line between groups
-            println!();
-        }
-        return Ok(());
-    }
 
-    // 7. Enforce exactly one change ID for Approve/Delete actions.
-    if !summary && filtered_pr_map.len() > 1 {
-        return Err(eyre::eyre!(
-            "Approve/Delete actions accept exactly one change_id, but found multiple: {:?}",
-            filtered_pr_map.keys().collect::<Vec<_>>()
-        ));
-    }
+    // 6. Convert the map into a sorted vector of (change_id, Vec<(reposlug, pr_number)>).
+    let mut groups: Vec<(String, Vec<(String, u64)>)> = filtered_pr_map.into_iter().collect();
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // 8. Process each matching PR individually.
-    let outputs: Vec<String> = filtered_pr_map
+    // 7. For each change_id group, process the repos concurrently using Rayon.
+    let output_groups: Vec<(String, Vec<String>)> = groups
         .into_iter()
-        .flat_map(|(pr_name, repo_vec)| {
-            repo_vec.into_iter().map(move |(reposlug, pr_number)| {
-                let repo = Repo::create_repo_from_remote_with_pr(&reposlug, &pr_name, pr_number);
-                repo.review(action, summary)
-            })
+        .map(|(change_id, repo_infos)| {
+            let repo_outputs: Vec<String> = repo_infos
+                .into_par_iter()
+                .map(|(reposlug, pr_number)| {
+                    let repo = Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
+                    repo.review(action, summary)
+                })
+                .collect::<eyre::Result<Vec<String>>>()?;
+            Ok((change_id, repo_outputs))
         })
-        .collect::<eyre::Result<Vec<String>>>()?;
+        .collect::<eyre::Result<Vec<(String, Vec<String>)>>>()?;
 
-    for output in outputs {
-        println!("{}", output);
+    // 8. Print the final hierarchical output.
+    for (change_id, repo_outputs) in output_groups {
+        println!("{}", change_id);
+        for output in repo_outputs {
+            println!("{}", utils::indent(&output, 2));
+        }
+        println!();
     }
-
     Ok(())
 }
