@@ -174,15 +174,16 @@ fn process_review_command(
         filtered_reposlugs.iter().join("\n")
     );
 
-    // 3. Get the PR map (with the updated structure).
+    // 3. Get the PR map (with the updated structure including author).
     let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
     debug!(
         "PR map:\n{}",
         pr_map
             .iter()
             .map(|(pr_name, vec)| {
-                let details = vec.iter()
-                    .map(|(repo, pr)| format!("{}:{}", repo, pr))
+                let details = vec
+                    .iter()
+                    .map(|(repo, pr, author)| format!("{}:{} ({})", repo, pr, author))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{} -> [{}]", pr_name, details)
@@ -206,7 +207,7 @@ fn process_review_command(
     };
 
     // 5. Filter the PR map based on the function.
-    let filtered_pr_map: std::collections::HashMap<String, Vec<(String, u64)>> = pr_map
+    let filtered_pr_map: std::collections::HashMap<String, Vec<(String, u64, String)>> = pr_map
         .into_iter()
         .filter(|(key, _)| change_id_filter(key))
         .collect();
@@ -217,8 +218,9 @@ fn process_review_command(
         filtered_pr_map
             .iter()
             .map(|(pr_name, vec)| {
-                let details = vec.iter()
-                    .map(|(repo, pr)| format!("{}:{}", repo, pr))
+                let details = vec
+                    .iter()
+                    .map(|(repo, pr, author)| format!("{}:{} ({})", repo, pr, author))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{} -> [{}]", pr_name, details)
@@ -228,36 +230,42 @@ fn process_review_command(
     );
 
     if filtered_pr_map.is_empty() {
-        warn!(
-            "No open PRs found matching change_id(s)."
-        );
+        warn!("No open PRs found matching change_id(s).");
         return Ok(());
     }
 
     let summary = matches!(action, cli::Action::Ls { .. }) && filtered_pr_map.len() > 1;
 
-    // 6. Convert the map into a sorted vector of (change_id, Vec<(reposlug, pr_number)>).
-    let mut groups: Vec<(String, Vec<(String, u64)>)> = filtered_pr_map.into_iter().collect();
+    // 6. Convert the map into a sorted vector of (change_id, Vec<(reposlug, pr_number, author)>).
+    let mut groups: Vec<(String, Vec<(String, u64, String)>)> = filtered_pr_map.into_iter().collect();
     groups.sort_by(|a, b| a.0.cmp(&b.0));
 
     // 7. For each change_id group, process the repos concurrently using Rayon.
-    let output_groups: Vec<(String, Vec<String>)> = groups
+    let output_groups: Vec<(String, String, Vec<String>)> = groups
         .into_iter()
         .map(|(change_id, repo_infos)| {
+            // Extract the author in its own block so that the borrow ends here.
+            let author = {
+                if let Some((_, _, author)) = repo_infos.first() {
+                    author.clone()
+                } else {
+                    "unknown".to_string()
+                }
+            };
             let repo_outputs: Vec<String> = repo_infos
                 .into_par_iter()
-                .map(|(reposlug, pr_number)| {
+                .map(|(reposlug, pr_number, _)| {
                     let repo = Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
                     repo.review(action, summary)
                 })
                 .collect::<eyre::Result<Vec<String>>>()?;
-            Ok((change_id, repo_outputs))
+            Ok((change_id, author, repo_outputs))
         })
-        .collect::<eyre::Result<Vec<(String, Vec<String>)>>>()?;
+        .collect::<eyre::Result<Vec<(String, String, Vec<String>)>>>()?;
 
     // 8. Print the final hierarchical output.
-    for (change_id, repo_outputs) in output_groups {
-        println!("{}", change_id);
+    for (change_id, author, repo_outputs) in output_groups {
+        println!("{} ({})", change_id, author);
         let joined = repo_outputs
             .into_iter()
             .map(|output| utils::indent(&output, 2))

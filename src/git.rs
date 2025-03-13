@@ -133,8 +133,8 @@ pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     Ok(pr_number)
 }
 
-pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String, Vec<(String, u64)>>> {
-    let results: Vec<HashMap<String, Vec<(String, u64)>>> = reposlugs
+pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String, Vec<(String, u64, String)>>> {
+    let results: Vec<HashMap<String, Vec<(String, u64, String)>>> = reposlugs
         .into_par_iter()
         .map(|reposlug: String| {
             let output = Command::new("gh")
@@ -142,7 +142,7 @@ pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String,
                     "pr", "list",
                     "--repo", &reposlug,
                     "--state", "open",
-                    "--json", "title,number",
+                    "--json", "title,number,author",
                     "--limit", "100",
                 ])
                 .output();
@@ -156,9 +156,14 @@ pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String,
                                     pr_obj.get("title").and_then(Value::as_str),
                                     pr_obj.get("number").and_then(Value::as_u64),
                                 ) {
+                                    let author = pr_obj.get("author")
+                                        .and_then(|a| a.get("login"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("unknown")
+                                        .to_string();
                                     map.entry(title.to_string())
                                         .or_insert_with(Vec::new)
-                                        .push((reposlug.clone(), number));
+                                        .push((reposlug.clone(), number, author));
                                 }
                             }
                             return map;
@@ -171,7 +176,6 @@ pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String,
             HashMap::new()
         })
         .collect();
-
     let final_map = results.into_iter().fold(HashMap::new(), |mut acc, hm| {
         for (title, vec) in hm {
             acc.entry(title).or_insert_with(Vec::new).extend(vec);
