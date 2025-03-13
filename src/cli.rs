@@ -19,7 +19,7 @@ pub struct SlamCli {
 
 #[derive(Subcommand, Debug)]
 pub enum SlamCommand {
-    #[command(alias = "alleyoop")]
+    #[command(alias = "alleyoop", about = "Create new PR branches with file updates")]
     Create {
         #[arg(short = 'f', long, help = "Glob pattern to find files within each repository")]
         files: Option<String>,
@@ -74,6 +74,7 @@ pub enum SlamCommand {
         repos: Vec<String>,
     },
 
+    #[command(about = "Review PRs and manage them")]
     Review {
         #[arg(
             short = 'o',
@@ -98,6 +99,7 @@ pub enum SlamCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
+    #[command(about = "List change IDs matching the given pattern")]
     Ls {
         #[arg(
             value_name = "CHANGE_ID_PTNS",
@@ -116,6 +118,7 @@ pub enum Action {
         buffer: usize,
     },
 
+    #[command(about = "Approve a specific PR identified by its change ID")]
     Approve {
         #[arg(
             value_name = "CHANGE_ID",
@@ -130,6 +133,7 @@ pub enum Action {
         admin_override: bool,
     },
 
+    #[command(about = "Delete a PR identified by its change ID")]
     Delete {
         #[arg(
             value_name = "CHANGE_ID",
