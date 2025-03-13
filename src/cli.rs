@@ -99,13 +99,13 @@ pub enum SlamCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    #[command(about = "List change IDs matching the given pattern")]
+    #[command(about = "List Change IDs matching the given pattern")]
     Ls {
         #[arg(
             value_name = "CHANGE_ID_PTNS",
             default_value = "SLAM*",
             num_args = 0..,
-            help = "Optional list of change IDs to filter by. Uses prefix matching (e.g. change IDs starting with SLAM)"
+            help = "Optional list of Change IDs to filter by. Uses prefix matching (e.g. Change IDs starting with SLAM)"
         )]
         change_id_ptns: Vec<String>,
 
@@ -118,7 +118,7 @@ pub enum Action {
         buffer: usize,
     },
 
-    #[command(about = "Approve a specific PR identified by its change ID")]
+    #[command(about = "Approve a specific PR & merge it per matched repos, identified by its Change ID")]
     Approve {
         #[arg(
             value_name = "CHANGE_ID",
@@ -133,7 +133,7 @@ pub enum Action {
         admin_override: bool,
     },
 
-    #[command(about = "Delete a PR identified by its change ID")]
+    #[command(about = "Delete a PR & branches per matched repos, identified by its Change ID")]
     Delete {
         #[arg(
             value_name = "CHANGE_ID",
