@@ -219,7 +219,7 @@ impl Repo {
         match git::get_pr_diff(&self.reponame, self.pr_number) {
             Ok(diff_text) => {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
-                for (filename, orig_text, upd_text) in file_patches {
+                for (filename, orig_text, upd_text) in &file_patches {
                     let indicator = if upd_text.trim().is_empty() { "D" } else { "M" };
                     output.push_str(&format!("{}\n", utils::indent(&format!("{} {}", indicator, filename), 2)));
                     let colored_diff = if upd_text.trim().is_empty() {
@@ -230,6 +230,9 @@ impl Repo {
                     for line in colored_diff.lines() {
                         output.push_str(&format!("{}\n", utils::indent(line, 4)));
                     }
+                }
+                if !file_patches.is_empty() {
+                    output.push_str("\n");
                 }
             }
             Err(e) => {

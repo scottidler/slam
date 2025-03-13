@@ -258,9 +258,12 @@ fn process_review_command(
     // 8. Print the final hierarchical output.
     for (change_id, repo_outputs) in output_groups {
         println!("{}", change_id);
-        for output in repo_outputs {
-            println!("{}\n", utils::indent(&output, 2));
-        }
+        let joined = repo_outputs
+            .into_iter()
+            .map(|output| utils::indent(&output, 2))
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("{}\n", joined);
     }
     Ok(())
 }
