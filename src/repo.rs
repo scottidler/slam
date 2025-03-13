@@ -191,10 +191,10 @@ impl Repo {
                     Ok(self.get_review_diff(*buffer))
                 }
             }
-            cli::Action::Approve { admin_override: _, .. } => {
-                git::approve_pr(&self.reponame, &self.change_id)?;
+            cli::Action::Approve { admin_override, .. } => {
+                git::approve_pr(&self.reponame, self.pr_number)?;
                 info!("PR for '{}' approved.", self.reponame);
-                git::merge_pr(&self.reponame, &self.change_id, false)?;
+                git::merge_pr(&self.reponame, self.pr_number, *admin_override)?;
                 info!("Successfully merged '{}'", self.reponame);
                 Ok(format!("Repo: {} -> Approved PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }

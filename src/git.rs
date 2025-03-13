@@ -269,15 +269,23 @@ pub fn delete_remote_branch_gh(repo: &str, branch: &str) -> Result<()> {
     }
 }
 
-pub fn approve_pr(repo: &str, branch: &str) -> Result<()> {
+pub fn approve_pr(repo: &str, pr_number: u64) -> Result<()> {
     Command::new("gh")
-        .args(["pr", "review", "--approve", "--repo", repo, "--branch", branch])
+        .args(["pr", "review", &pr_number.to_string(), "--approve", "--repo", repo])
         .output()?;
     Ok(())
 }
 
-pub fn merge_pr(repo: &str, branch: &str, admin_override: bool) -> Result<()> {
-    let mut args = vec!["pr", "merge", "--squash", "--delete-branch", "--repo", repo, "--branch", branch];
+pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> {
+    let pr_binding = pr_number.to_string();
+    let mut args = vec![
+        "pr", "merge",
+        &pr_binding,
+        "--squash",
+        "--delete-branch",
+        "--repo",
+        repo,
+    ];
     if admin_override {
         args.insert(3, "--admin");
     }
