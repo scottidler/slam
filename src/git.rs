@@ -246,6 +246,25 @@ pub fn delete_remote_branch(repo_path: &Path, branch: &str) -> Result<()> {
     }
 }
 
+pub fn delete_remote_branch_gh(repo: &str, branch: &str) -> Result<()> {
+    let api_endpoint = format!("repos/{}/git/refs/heads/{}", repo, branch);
+    let output = Command::new("gh")
+        .args(["api", "-X", "DELETE", &api_endpoint])
+        .output()?;
+    if output.status.success() {
+        info!("Deleted remote branch '{}' in repo '{}'", branch, repo);
+        Ok(())
+    } else {
+        warn!(
+            "Failed to delete remote branch '{}' in repo '{}': {}",
+            branch,
+            repo,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+}
+
 pub fn approve_pr(repo: &str, branch: &str) -> Result<()> {
     Command::new("gh")
         .args(["pr", "review", "--approve", "--repo", repo, "--branch", branch])

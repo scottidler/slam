@@ -198,9 +198,17 @@ impl Repo {
                 info!("Successfully merged '{}'", self.reponame);
                 Ok(format!("Repo: {} -> Approved PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }
-            cli::Action::Delete { .. } => {
-                info!("Delete action selected for '{}'; stub not implemented.", self.reponame);
-                Ok(format!("Delete stub for repo '{}'", self.reponame))
+            cli::Action::Delete { change_id: _ } => {
+                let mut messages = Vec::new();
+                if self.pr_number != 0 {
+                    git::close_pr(&self.reponame, self.pr_number)?;
+                    messages.push(format!("Closed PR #{} for repo '{}'", self.pr_number, self.reponame));
+                } else {
+                    messages.push(format!("No open PR found for repo '{}'", self.reponame));
+                }
+                git::delete_remote_branch_gh(&self.reponame, &self.change_id)?;
+                messages.push(format!("Deleted remote branch '{}' for repo '{}'", self.change_id, self.reponame));
+                Ok(messages.join("\n"))
             }
         }
     }
