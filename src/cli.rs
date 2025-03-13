@@ -74,7 +74,7 @@ pub enum SlamCommand {
         repos: Vec<String>,
     },
 
-    #[command(about = "Review PRs and manage them")]
+    #[command(about = "Review PRs and merge them")]
     Review {
         #[arg(
             short = 'o',
