@@ -42,16 +42,16 @@ pub fn find_git_repositories(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(repos)
 }
 
-pub fn checkout_branch(repo_path: &Path, branch: &str) -> eyre::Result<()> {
+pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
         .args(&["checkout", "-B", branch])
         .output()
-        .map_err(|e| eyre::eyre!("Failed to execute git checkout: {}", e))?;
+        .map_err(|e| eyre!("Failed to execute git checkout: {}", e))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(eyre::eyre!(
+        Err(eyre!(
             "Failed to checkout branch {}: {}",
             branch,
             String::from_utf8_lossy(&output.stderr)
@@ -133,7 +133,7 @@ pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     Ok(pr_number)
 }
 
-pub fn get_prs_for_repos(reposlugs: Vec<String>) -> eyre::Result<HashMap<String, Vec<(String, u64, String)>>> {
+pub fn get_prs_for_repos(reposlugs: Vec<String>) -> Result<HashMap<String, Vec<(String, u64, String)>>> {
     let results: Vec<HashMap<String, Vec<(String, u64, String)>>> = reposlugs
         .into_par_iter()
         .map(|reposlug: String| {
@@ -281,6 +281,7 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
     let mut args = vec![
         "pr", "merge",
         &pr_binding,
+        "--rebase",
         "--squash",
         "--delete-branch",
         "--repo",
@@ -293,7 +294,7 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
     Ok(())
 }
 
-pub fn get_head_branch(repo_path: &Path) -> eyre::Result<String> {
+pub fn get_head_branch(repo_path: &Path) -> Result<String> {
     let output = Command::new("git")
         .current_dir(repo_path)
         .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
@@ -309,7 +310,7 @@ pub fn get_head_branch(repo_path: &Path) -> eyre::Result<String> {
         .ok_or_else(|| eyre!("Unexpected format for HEAD branch: {}", full_ref))
 }
 
-pub fn prepare_repo_for_branch_creation(repo_path: &Path) -> eyre::Result<()> {
+pub fn preflight_checks(repo_path: &Path) -> Result<()> {
     let head_branch = get_head_branch(repo_path)?;
     let current_branch_output = Command::new("git")
         .current_dir(repo_path)
@@ -419,7 +420,7 @@ pub fn close_pr(repo: &str, pr_number: u64) -> Result<()> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(eyre::eyre!(
+        Err(eyre!(
             "Failed to close PR {} for {}: {}",
             pr_number,
             repo,

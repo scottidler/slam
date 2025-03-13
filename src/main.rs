@@ -102,7 +102,7 @@ fn process_create_command(
     buffer: usize,
     commit: Option<String>,
     user_repo_specs: Vec<String>,
-) -> eyre::Result<()> {
+) -> Result<()> {
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 
@@ -126,7 +126,7 @@ fn process_create_command(
     let outputs: Vec<String> = filtered_repos
         .par_iter()
         .map(|repo| repo.create(&root, buffer, commit.as_deref()))
-        .collect::<eyre::Result<Vec<String>>>()?;
+        .collect::<Result<Vec<String>>>()?;
 
     println!("{}", change_id);
     for output in outputs {
@@ -157,7 +157,7 @@ fn process_review_command(
     org: String,
     action: &cli::Action,
     reposlug_ptns: Vec<String>,
-) -> eyre::Result<()> {
+) -> Result<()> {
     // 1. Get all repos in the organization.
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
@@ -258,10 +258,10 @@ fn process_review_command(
                     let repo = Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
                     repo.review(action, summary)
                 })
-                .collect::<eyre::Result<Vec<String>>>()?;
+                .collect::<Result<Vec<String>>>()?;
             Ok((change_id, author, repo_outputs))
         })
-        .collect::<eyre::Result<Vec<(String, String, Vec<String>)>>>()?;
+        .collect::<Result<Vec<(String, String, Vec<String>)>>>()?;
 
     // 8. Print the final hierarchical output.
     for (change_id, author, repo_outputs) in output_groups {

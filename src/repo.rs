@@ -1,5 +1,5 @@
 use eyre::Result;
-use log::{info, debug, warn};
+use log::{info, debug, warn, error};
 use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 
@@ -153,13 +153,13 @@ impl Repo {
     }
 
     pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> Result<String> {
-        let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
-        let commit_msg = match commit_msg {
-            Some(msg) => msg,
-            None => return Ok(diff_output),
-        };
         let repo_path = root.join(&self.reponame);
-        git::prepare_repo_for_branch_creation(&repo_path)?;
+        git::preflight_checks(&repo_path)?;
+        let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
+        if commit_msg.is_none() {
+            return Ok(diff_output);
+        }
+        let commit_msg = commit_msg.unwrap();
         let pr_number = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
         if pr_number != 0 {
             warn!(
@@ -192,10 +192,36 @@ impl Repo {
                 }
             }
             cli::Action::Approve { admin_override, .. } => {
-                git::approve_pr(&self.reponame, self.pr_number)?;
-                info!("PR for '{}' approved.", self.reponame);
-                git::merge_pr(&self.reponame, self.pr_number, *admin_override)?;
-                info!("Successfully merged '{}'", self.reponame);
+                match git::approve_pr(&self.reponame, self.pr_number) {
+                    Ok(_) => {
+                        info!("PR for '{}' approved.", self.reponame);
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("already approved") {
+                            warn!("PR {} is already approved; skipping re-approval.", self.pr_number);
+                        } else {
+                            error!("Approval failed for PR {}: {}", self.pr_number, e);
+                            println!("Error during approval for repo {}: {}", self.reponame, e);
+                            return Err(e);
+                        }
+                    }
+                }
+                match git::merge_pr(&self.reponame, self.pr_number, *admin_override) {
+                    Ok(()) => {
+                        info!("Successfully merged '{}' via remote merge.", self.reponame);
+                    }
+                    Err(merge_err) => {
+                        if merge_err.to_string().contains("Merge conflict") {
+                            warn!("Merge conflict detected for repo {}. A rebase is required via the GitHub UI or another remote process.", self.reponame);
+                            println!("Error: Merge conflict detected for repo {}. Please rebase manually using the GitHub UI.", self.reponame);
+                            return Err(merge_err);
+                        } else {
+                            error!("Merge failed for repo {}: {}", self.reponame, merge_err);
+                            println!("Error: Merge failed for repo {}: {}", self.reponame, merge_err);
+                            return Err(merge_err);
+                        }
+                    }
+                }
                 Ok(format!("Repo: {} -> Approved PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }
             cli::Action::Delete { change_id: _ } => {
