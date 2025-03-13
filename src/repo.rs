@@ -215,7 +215,7 @@ impl Repo {
 
     pub fn get_review_diff(&self, buffer: usize) -> String {
         let mut output = String::new();
-        output.push_str(&format!("{}\n", self.reponame));
+        output.push_str(&format!("{} (# {})\n", self.reponame, self.pr_number));
         match git::get_pr_diff(&self.reponame, self.pr_number) {
             Ok(diff_text) => {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
