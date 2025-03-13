@@ -158,8 +158,8 @@ impl Repo {
             Some(msg) => msg,
             None => return Ok(diff_output),
         };
-
         let repo_path = root.join(&self.reponame);
+        git::prepare_repo_for_branch_creation(&repo_path)?;
         let pr_number = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
         if pr_number != 0 {
             warn!(

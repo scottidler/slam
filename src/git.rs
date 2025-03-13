@@ -293,6 +293,76 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
     Ok(())
 }
 
+pub fn get_head_branch(repo_path: &Path) -> eyre::Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output()
+        .map_err(|e| eyre!("Failed to get HEAD branch for repo {}: {}", repo_path.display(), e))?;
+    if !output.status.success() {
+        return Err(eyre!("Failed to get HEAD branch for repo {}.", repo_path.display()));
+    }
+    let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    full_ref
+        .strip_prefix("origin/")
+        .map(String::from)
+        .ok_or_else(|| eyre!("Unexpected format for HEAD branch: {}", full_ref))
+}
+
+pub fn prepare_repo_for_branch_creation(repo_path: &Path) -> eyre::Result<()> {
+    let head_branch = get_head_branch(repo_path)?;
+    let current_branch_output = Command::new("git")
+        .current_dir(repo_path)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .map_err(|e| eyre!("Failed to get current branch for repo {}: {}", repo_path.display(), e))?;
+    if !current_branch_output.status.success() {
+        return Err(eyre!("Failed to determine current branch for repo {}", repo_path.display()));
+    }
+    let current_branch = String::from_utf8_lossy(&current_branch_output.stdout).trim().to_string();
+    let status_output = Command::new("git")
+        .current_dir(repo_path)
+        .args(["status", "--porcelain"])
+        .output()
+        .map_err(|e| eyre!("Failed to get status for repo {}: {}", repo_path.display(), e))?;
+    if !status_output.status.success() {
+        return Err(eyre!("Failed to get status for repo {}", repo_path.display()));
+    }
+    let status_str = String::from_utf8_lossy(&status_output.stdout);
+    if status_str.lines().any(|line| line.starts_with("??")) {
+        return Err(eyre!("Untracked files present in repo {}. Please commit or remove them.", repo_path.display()));
+    }
+    if !status_str.lines().filter(|line| !line.starts_with("??") && !line.trim().is_empty()).collect::<Vec<_>>().is_empty() {
+        let stash_output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "push", "-m", "SLAM pre-branch-stash"])
+            .output()
+            .map_err(|e| eyre!("Failed to stash changes in repo {}: {}", repo_path.display(), e))?;
+        if !stash_output.status.success() {
+            return Err(eyre!("Failed to stash changes in repo {}", repo_path.display()));
+        }
+    }
+    if current_branch != head_branch {
+        let checkout_output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["checkout", &head_branch])
+            .output()
+            .map_err(|e| eyre!("Failed to checkout branch {} in repo {}: {}", head_branch, repo_path.display(), e))?;
+        if !checkout_output.status.success() {
+            return Err(eyre!("Failed to checkout branch {} in repo {}", head_branch, repo_path.display()));
+        }
+    }
+    let pull_output = Command::new("git")
+        .current_dir(repo_path)
+        .args(["pull"])
+        .output()
+        .map_err(|e| eyre!("Failed to pull changes in repo {}: {}", repo_path.display(), e))?;
+    if !pull_output.status.success() {
+        return Err(eyre!("Failed to pull changes in repo {}", repo_path.display()));
+    }
+    Ok(())
+}
+
 //-----------------------------------------------------------------------------------------------
 
 pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str) -> Option<String> {
