@@ -76,58 +76,50 @@ impl Repo {
         }
     }
 
-    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool, no_diff: bool) -> String {
+    pub fn show_create_diff(&self, root: &std::path::Path, buffer: usize, commit: bool, no_diff: bool) -> String {
         let repo_path = root.join(&self.reponame);
         let mut file_diffs = String::new();
 
-        // When no_diff is active, simply list the matched files.
-        if no_diff {
-            for file in &self.files {
-                file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
-            }
-            if file_diffs.trim().is_empty() {
-                return "".to_string();
-            } else {
-                return format!("{}\n{}", self.reponame, file_diffs);
-            }
-        }
-
         if let Some(change) = self.change.as_ref() {
             match change {
+                // For deletion, delete the file regardless of diff display.
                 Change::Delete => {
                     for file in &self.files {
-                        let mut file_diff = String::new();
-                        // Record file header diff
-                        file_diff.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 2)));
                         let full_path = repo_path.join(file);
-                        match std::fs::read_to_string(&full_path) {
-                            Ok(content) => {
-                                let diff = diff::generate_diff(&content, "", buffer);
+                        // Delete the file if in commit mode.
+                        if commit {
+                            let _ = std::fs::remove_file(&full_path);
+                        }
+                        // Only generate diff output if no_diff is false.
+                        if !no_diff {
+                            // Try to read file content before deletion if possible.
+                            match std::fs::read_to_string(&full_path) {
+                                Ok(content) => {
+                                    let diff = diff::generate_diff(&content, "", buffer);
+                                    let mut file_diff = format!("{}\n", utils::indent(&format!("D {}", file), 2));
+                                    for line in diff.lines() {
+                                        file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
+                                    }
+                                    file_diffs.push_str(&file_diff);
+                                },
+                                Err(err) => {
+                                    file_diffs.push_str(&format!("{}\n", utils::indent(&format!("D {} (Could not read file: {})", file, err), 2)));
+                                }
+                            }
+                        }
+                    }
+                },
+                // For Substitution and Regex actions.
+                Change::Sub(_, _) | Change::Regex(_, _) => {
+                    for file in &self.files {
+                        let full_path = repo_path.join(file);
+                        // process_file applies the changes if commit is true and returns a diff.
+                        if let Some(diff) = process_file(&full_path, change, buffer, commit) {
+                            let mut file_diff = format!("{}\n", utils::indent(&format!("M {}", file), 2));
+                            if !no_diff {
                                 for line in diff.lines() {
                                     file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                                 }
-                            }
-                            Err(err) => {
-                                file_diff.push_str(&format!(
-                                    "{}\n",
-                                    utils::indent(&format!("(Could not read file for diff: {})", err), 2)
-                                ));
-                            }
-                        }
-                        if !file_diff.trim().is_empty() {
-                            file_diffs.push_str(&file_diff);
-                        }
-                    }
-                }
-                // For Sub and Regex actions
-                _ => {
-                    for file in &self.files {
-                        let full_path = repo_path.join(file);
-                        if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            let mut file_diff = String::new();
-                            file_diff.push_str(&format!("{}\n", utils::indent(&format!("M {}", file), 2)));
-                            for line in diff.lines() {
-                                file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                             }
                             file_diffs.push_str(&file_diff);
                         }
@@ -135,6 +127,7 @@ impl Repo {
                 }
             }
         } else {
+            // If no change was specified, just list the matched files.
             for file in &self.files {
                 file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
             }
