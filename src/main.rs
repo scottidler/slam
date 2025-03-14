@@ -95,14 +95,13 @@ fn process_create_command(
     let discovered_paths = git::find_git_repositories(&root)?;
 
     let mut discovered_repos = Vec::new();
-    // Initially create repos with no change; later we update if an action is provided.
     for path in discovered_paths {
         if let Some(repo) = Repo::create_repo_from_local(&path, &root, &None, &files, &change_id) {
             discovered_repos.push(repo);
         }
     }
 
-    let filtered_repos: Vec<_> = discovered_repos
+    let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
         .filter(|repo| {
             user_repo_specs.is_empty()
@@ -111,7 +110,12 @@ fn process_create_command(
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
-    // Dry run: if no action is provided, print matched repos (and their files if applicable)
+    // If a files pattern is provided, filter out repos with no matched files.
+    if files.is_some() {
+        filtered_repos.retain(|repo| !repo.files.is_empty());
+    }
+
+    // Dry run: if no action is provided, just print the matched repos (and files if applicable)
     if action.is_none() {
         if filtered_repos.is_empty() {
             println!("No repositories matched your criteria.");
@@ -119,13 +123,9 @@ fn process_create_command(
             println!("Matched repositories:");
             for repo in filtered_repos {
                 println!("  {}", repo.reponame);
-                if let Some(ref pattern) = files {
-                    if repo.files.is_empty() {
-                        println!("    (No files matched pattern '{}')", pattern);
-                    } else {
-                        for file in repo.files {
-                            println!("    {}", file);
-                        }
+                if files.is_some() {
+                    for file in repo.files {
+                        println!("    {}", file);
                     }
                 }
             }
@@ -138,10 +138,10 @@ fn process_create_command(
         Some(CreateAction::Delete { commit }) => (Some(Change::Delete), commit),
         Some(CreateAction::Sub { ptn, repl, commit }) => (Some(Change::Sub(ptn, repl)), commit),
         Some(CreateAction::Regex { ptn, repl, commit }) => (Some(Change::Regex(ptn, repl)), commit),
-        None => (None, None), // Should not occur because we already handled the dry-run case.
+        None => (None, None), // This branch is unreachable due to the above check.
     };
 
-    // Update the filtered repositories with the extracted change
+    // Update the filtered repositories with the extracted change.
     let filtered_repos: Vec<_> = filtered_repos
         .into_iter()
         .map(|mut repo| {
