@@ -3,7 +3,6 @@ use std::{
     fs,
     io,
     io::Write,
-    path::Path,
 };
 
 use clap::{CommandFactory, FromArgMatches};
@@ -31,7 +30,7 @@ fn main() -> Result<()> {
         env::set_var("RUST_LOG", "info");
     }
 
-    let log_dir = Path::new("/var/log/messages/slam");
+    let log_dir = utils::get_or_create_log_dir();
     let log_file_path = log_dir.join("slam.log");
 
     let log_writer: Box<dyn Write + Send> = if log_dir.exists() && log_dir.is_dir() {

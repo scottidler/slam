@@ -1,5 +1,13 @@
+use std::{
+    fs,
+    path::PathBuf,
+    process::Command,
+};
+
 use clap::{Parser, Subcommand};
 use chrono::Local;
+
+use crate::utils;
 
 pub fn default_change_id() -> String {
     let now = Local::now();
@@ -155,10 +163,6 @@ pub enum ReviewAction {
 }
 
 pub fn get_cli_tool_status() -> String {
-    use std::fs;
-    use std::path::Path;
-    use std::process::Command;
-
     let success = "✅";
     let failure = "❌";
     let tools = [("git", &["--version"]), ("gh", &["--version"])];
@@ -177,17 +181,18 @@ pub fn get_cli_tool_status() -> String {
             }
         }
     }
-    let log_status = {
-        let log_dir = Path::new("/var/log/messages/slam");
-        if log_dir.exists() && log_dir.is_dir() {
-            match fs::OpenOptions::new().create(true).append(true).open(log_dir.join("slam.log")) {
-                Ok(_) => format!("{} {} (writable)\n", success, log_dir.display()),
-                Err(_) => format!("{} {} (!writable)\n", failure, log_dir.display()),
-            }
-        } else {
-            format!("{} {} (not found)\n", failure, log_dir.display())
+
+    let log_dir: PathBuf = utils::get_or_create_log_dir();
+    let log_file = log_dir.join("slam.log");
+    let log_status = if log_dir.exists() && log_dir.is_dir() {
+        match fs::OpenOptions::new().create(true).append(true).open(&log_file) {
+            Ok(_) => format!("{} {} (writable)\n", success, log_dir.display()),
+            Err(_) => format!("{} {} (!writable)\n", failure, log_dir.display()),
         }
+    } else {
+        format!("{} {} (not found)\n", failure, log_dir.display())
     };
+
     output_string.push_str(&log_status);
     output_string.push('\n');
     output_string
