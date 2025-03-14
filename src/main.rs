@@ -124,12 +124,22 @@ fn process_create_command(
         .map(|repo| repo.create(&root, buffer, commit.as_deref()))
         .collect::<Result<Vec<String>>>()?;
 
-    println!("{}", change_id);
-    for output in outputs {
-        println!("{}\n", utils::indent(&output, 2));
+    // Filter out repos with no diff output.
+    let non_empty_outputs: Vec<String> = outputs
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
+    // Only print the change_id and diff outputs if at least one repo has changes.
+    if !non_empty_outputs.is_empty() {
+        println!("{}", change_id);
+        for output in non_empty_outputs {
+            println!("{}\n", utils::indent(&output, 2));
+        }
     }
     Ok(())
 }
+
 
 fn filter_repos(all_reposlugs: Vec<String>, reposlug_ptns: Vec<String>) -> Vec<String> {
     if reposlug_ptns.is_empty() || reposlug_ptns.iter().all(|s| s.trim().is_empty()) {

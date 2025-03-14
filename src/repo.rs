@@ -86,29 +86,34 @@ impl Repo {
     }
 
     pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) -> String {
-        let mut output = String::new();
-        output.push_str(&format!("{}\n", self.reponame));
-
         let repo_path = root.join(&self.reponame);
+        let mut file_diffs = String::new();
+
         if let Some(change) = self.change.as_ref() {
             match change {
                 Change::Delete => {
                     for file in &self.files {
-                        output.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 2)));
+                        let mut file_diff = String::new();
+                        // Record file header diff
+                        file_diff.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 2)));
                         let full_path = repo_path.join(file);
                         match std::fs::read_to_string(&full_path) {
                             Ok(content) => {
                                 let diff = diff::generate_diff(&content, "", buffer);
                                 for line in diff.lines() {
-                                    output.push_str(&format!("{}\n", utils::indent(line, 4)));
+                                    file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                                 }
                             }
                             Err(err) => {
-                                output.push_str(&format!(
+                                file_diff.push_str(&format!(
                                     "{}\n",
                                     utils::indent(&format!("(Could not read file for diff: {})", err), 2)
                                 ));
                             }
+                        }
+                        // Only add if there is a non-empty diff (excluding whitespace)
+                        if !file_diff.trim().is_empty() {
+                            file_diffs.push_str(&file_diff);
                         }
                     }
                     if commit {
@@ -122,21 +127,29 @@ impl Repo {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            output.push_str(&format!("{}\n", utils::indent(&format!("M {}", file), 2)));
+                            let mut file_diff = String::new();
+                            file_diff.push_str(&format!("{}\n", utils::indent(&format!("M {}", file), 2)));
                             for line in diff.lines() {
-                                output.push_str(&format!("{}\n", utils::indent(line, 4)));
+                                file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                             }
+                            file_diffs.push_str(&file_diff);
                         }
                     }
                 }
             }
         } else {
             for file in &self.files {
-                output.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
+                file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
             }
         }
-        output
+        // If no file diffs were collected, return an empty string
+        if file_diffs.trim().is_empty() {
+            "".to_string()
+        } else {
+            format!("{}\n{}", self.reponame, file_diffs)
+        }
     }
+
 
     pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> Result<String> {
         let repo_path = root.join(&self.reponame);
