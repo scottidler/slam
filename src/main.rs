@@ -73,13 +73,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         cli::SlamCommand::Create { files, change_id, buffer, repos, action } => {
-            // Extract the change and commit message from the nested CreateAction.
-            let (change, commit_msg) = match action {
-                CreateAction::Delete { commit } => (Some(Change::Delete), commit),
-                CreateAction::Sub { ptn, repl, commit } => (Some(Change::Sub(ptn, repl)), commit),
-                CreateAction::Regex { ptn, repl, commit } => (Some(Change::Regex(ptn, repl)), commit),
-            };
-            process_create_command(files, change, change_id, buffer, commit_msg, repos)?;
+            process_create_command(files, action, change_id, buffer, repos)?;
         }
         cli::SlamCommand::Review { org, repos, action } => {
             process_review_command(org, &action, repos)?;
@@ -92,18 +86,18 @@ fn main() -> Result<()> {
 
 fn process_create_command(
     files: Option<String>,
-    change: Option<Change>,
+    action: Option<CreateAction>,
     change_id: String,
     buffer: usize,
-    commit: Option<String>,
     user_repo_specs: Vec<String>,
-) -> Result<()> {
+) -> eyre::Result<()> {
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 
     let mut discovered_repos = Vec::new();
+    // Initially create repos with no change; later we update if an action is provided.
     for path in discovered_paths {
-        if let Some(repo) = Repo::create_repo_from_local(&path, &root, &change, &files, &change_id) {
+        if let Some(repo) = Repo::create_repo_from_local(&path, &root, &None, &files, &change_id) {
             discovered_repos.push(repo);
         }
     }
@@ -117,19 +111,56 @@ fn process_create_command(
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
-    // Gather diff outputs from each repo.
+    // Dry run: if no action is provided, print matched repos (and their files if applicable)
+    if action.is_none() {
+        if filtered_repos.is_empty() {
+            println!("No repositories matched your criteria.");
+        } else {
+            println!("Matched repositories:");
+            for repo in filtered_repos {
+                println!("  {}", repo.reponame);
+                if let Some(ref pattern) = files {
+                    if repo.files.is_empty() {
+                        println!("    (No files matched pattern '{}')", pattern);
+                    } else {
+                        for file in repo.files {
+                            println!("    {}", file);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // An action was provided; extract the change and commit message.
+    let (change, commit_msg) = match action {
+        Some(CreateAction::Delete { commit }) => (Some(Change::Delete), commit),
+        Some(CreateAction::Sub { ptn, repl, commit }) => (Some(Change::Sub(ptn, repl)), commit),
+        Some(CreateAction::Regex { ptn, repl, commit }) => (Some(Change::Regex(ptn, repl)), commit),
+        None => (None, None), // Should not occur because we already handled the dry-run case.
+    };
+
+    // Update the filtered repositories with the extracted change
+    let filtered_repos: Vec<_> = filtered_repos
+        .into_iter()
+        .map(|mut repo| {
+            repo.change = change.clone();
+            repo
+        })
+        .collect();
+
+    // Process each repository (committing changes, creating diffs, etc.)
     let outputs: Vec<String> = filtered_repos
         .par_iter()
-        .map(|repo| repo.create(&root, buffer, commit.as_deref()))
-        .collect::<Result<Vec<String>>>()?;
+        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref()))
+        .collect::<eyre::Result<Vec<String>>>()?;
 
-    // Filter out repos with no diff output.
     let non_empty_outputs: Vec<String> = outputs
         .into_iter()
         .filter(|s| !s.trim().is_empty())
         .collect();
 
-    // Only print the change_id and diff outputs if at least one repo has changes.
     if !non_empty_outputs.is_empty() {
         println!("{}", change_id);
         for output in non_empty_outputs {
@@ -138,7 +169,6 @@ fn process_create_command(
     }
     Ok(())
 }
-
 
 fn filter_repos(all_reposlugs: Vec<String>, reposlug_ptns: Vec<String>) -> Vec<String> {
     if reposlug_ptns.is_empty() || reposlug_ptns.iter().all(|s| s.trim().is_empty()) {

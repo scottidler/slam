@@ -55,15 +55,6 @@ impl Repo {
                     return None;
                 }
             }
-
-            if files_pattern.is_some() && files.is_empty() {
-                debug!(
-                    "Skipping '{}' as no files matched '{}'",
-                    repo.display(),
-                    files_pattern.as_deref().unwrap_or("None")
-                );
-                return None;
-            }
         }
 
         Some(Self {

@@ -78,7 +78,7 @@ pub struct SlamCli {
 pub enum SlamCommand {
     #[command(
         alias = "alleyoop",
-        about = "Create new PR branches with file updates"
+        about = "Create new PR branches with file updates. If no subcommand is provided, a dry run will print the list of matched repositories (filtered via -r) and, if -f is supplied, the matching files beneath them."
     )]
     Create {
         #[arg(
@@ -114,7 +114,7 @@ pub enum SlamCommand {
         repos: Vec<String>,
 
         #[command(subcommand)]
-        action: CreateAction,
+        action: Option<CreateAction>,
     },
 
     #[command(
