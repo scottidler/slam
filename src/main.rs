@@ -22,9 +22,6 @@ mod diff;
 mod repo;
 mod utils;
 
-use cli::{SlamCli, CreateAction, ReviewAction, get_cli_tool_status};
-use repo::{Change, Repo};
-
 fn main() -> Result<()> {
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info");
@@ -66,9 +63,9 @@ fn main() -> Result<()> {
         })
         .init();
 
-    let mut cmd = SlamCli::command();
-    cmd = cmd.after_help(get_cli_tool_status());
-    let cli = SlamCli::from_arg_matches(&cmd.get_matches())?;
+    let mut cmd = cli::SlamCli::command();
+    cmd = cmd.after_help(cli::get_cli_tool_status());
+    let cli = cli::SlamCli::from_arg_matches(&cmd.get_matches())?;
     info!("Starting SLAM");
 
     match cli.command {
@@ -86,17 +83,17 @@ fn main() -> Result<()> {
 
 fn process_create_command(
     files: Option<String>,
-    action: Option<CreateAction>,
+    action: Option<cli::CreateAction>,
     change_id: String,
     buffer: usize,
     user_repo_specs: Vec<String>,
-) -> eyre::Result<()> {
+) -> Result<()> {
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 
     let mut discovered_repos = Vec::new();
     for path in discovered_paths {
-        if let Some(repo) = Repo::create_repo_from_local(&path, &root, &None, &files, &change_id) {
+        if let Some(repo) = repo::Repo::create_repo_from_local(&path, &root, &None, &files, &change_id) {
             discovered_repos.push(repo);
         }
     }
@@ -135,9 +132,9 @@ fn process_create_command(
 
     // An action was provided; extract the change, commit message, and the no_diff flag.
     let (change, commit_msg, no_diff) = match action.unwrap() {
-        CreateAction::Delete { commit, no_diff } => (Some(Change::Delete), commit, no_diff),
-        CreateAction::Sub { ptn, repl, commit, no_diff } => (Some(Change::Sub(ptn, repl)), commit, no_diff),
-        CreateAction::Regex { ptn, repl, commit, no_diff } => (Some(Change::Regex(ptn, repl)), commit, no_diff),
+        cli::CreateAction::Delete { commit, no_diff } => (Some(repo::Change::Delete), commit, no_diff),
+        cli::CreateAction::Sub { ptn, repl, commit, no_diff } => (Some(repo::Change::Sub(ptn, repl)), commit, no_diff),
+        cli::CreateAction::Regex { ptn, repl, commit, no_diff } => (Some(repo::Change::Regex(ptn, repl)), commit, no_diff),
     };
 
     // Update the filtered repositories with the extracted change.
@@ -189,9 +186,9 @@ fn filter_repos(all_reposlugs: Vec<String>, reposlug_ptns: Vec<String>) -> Vec<S
 
 fn process_review_command(
     org: String,
-    action: &ReviewAction,
+    action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
-) -> Result<()> {
+) -> eyre::Result<()> {
     // 1. Get all repos in the organization.
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
@@ -208,7 +205,7 @@ fn process_review_command(
         filtered_reposlugs.iter().join("\n")
     );
 
-    // 3. Get the PR map (with the updated structure including author).
+    // 3. Get the PR map.
     let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
     debug!(
         "PR map:\n{}",
@@ -226,75 +223,74 @@ fn process_review_command(
             .join("\n")
     );
 
-    // 4. Define a filtering function based on the CLI action.
+    // 4. Define a filtering closure that enforces the change ID to start with "SLAM".
     let change_id_filter: Box<dyn Fn(&String) -> bool> = match action {
-        ReviewAction::Ls { change_id_ptns, .. } => {
+        cli::ReviewAction::Ls { change_id_ptns, .. } => {
             Box::new(move |key: &String| {
-                change_id_ptns.iter().any(|ptn| {
-                    Pattern::new(ptn).map_or(false, |glob_pat| glob_pat.matches(key))
-                })
+                // Only consider keys starting with "SLAM".
+                if !key.starts_with("SLAM") {
+                    return false;
+                }
+                // If no extra patterns provided, allow it.
+                if change_id_ptns.is_empty() {
+                    true
+                } else {
+                    change_id_ptns.iter().any(|ptn| {
+                        if let Ok(glob_pat) = glob::Pattern::new(ptn) {
+                            glob_pat.matches(key)
+                        } else {
+                            false
+                        }
+                    })
+                }
             })
         }
-        ReviewAction::Approve { change_id, .. } | ReviewAction::Delete { change_id, .. } => {
-            Box::new(move |key: &String| key == change_id)
-        }
+        cli::ReviewAction::Approve { change_id, .. }
+        | cli::ReviewAction::Delete { change_id, .. } => Box::new(move |key: &String| {
+            key.starts_with("SLAM") && key == change_id
+        }),
     };
 
-    // 5. Filter the PR map based on the function.
-    let filtered_pr_map: std::collections::HashMap<String, Vec<(String, u64, String)>> = pr_map
-        .into_iter()
-        .filter(|(key, _)| change_id_filter(key))
-        .collect();
-
-    debug!("Filtered PR map has {} keys", filtered_pr_map.len());
-    debug!(
-        "Filtered PR map:\n{}",
-        filtered_pr_map
-            .iter()
-            .map(|(pr_name, vec)| {
-                let details = vec
-                    .iter()
-                    .map(|(repo, pr, author)| format!("{}:{} ({})", repo, pr, author))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} -> [{}]", pr_name, details)
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    // 5. Filter the PR map using the closure.
+    let filtered_pr_map: std::collections::HashMap<String, Vec<(String, u64, String)>> =
+        pr_map.into_iter().filter(|(key, _)| change_id_filter(key)).collect();
 
     if filtered_pr_map.is_empty() {
-        warn!("No open PRs found matching change_id(s).");
+        warn!("No open PRs found matching change_id(s) starting with 'SLAM'.");
         return Ok(());
     }
 
-    let summary = matches!(action, ReviewAction::Ls { .. }) && filtered_pr_map.len() > 1;
+    // 6. Determine summary mode: if no change_id patterns were provided, we only show summary.
+    let summary = match action {
+        cli::ReviewAction::Ls { change_id_ptns, .. } => change_id_ptns.is_empty(),
+        _ => false,
+    };
 
-    // 6. Convert the map into a sorted vector of (change_id, Vec<(reposlug, pr_number, author)>).
+    // 7. Convert the map into a sorted vector and process each group concurrently.
     let mut groups: Vec<(String, Vec<(String, u64, String)>)> = filtered_pr_map.into_iter().collect();
     groups.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // 7. For each change_id group, process the repos concurrently using Rayon.
-    let output_groups: Vec<(String, String, Vec<String>)> = groups
+    let output_groups: eyre::Result<Vec<(String, String, Vec<String>)>> = groups
         .into_iter()
         .map(|(change_id, repo_infos)| {
-            // Extract the author from the first repo in the group.
-            let author = if let Some((_, _, author)) = repo_infos.first() {
-                author.clone()
-            } else {
-                "unknown".to_string()
-            };
-            let repo_outputs: Vec<String> = repo_infos
+            // Use the first repo's author for the header (or "unknown" if empty)
+            let author = repo_infos
+                .first()
+                .map(|(_, _, author)| author.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            // Process each repo concurrently. Each repo.review returns a Result<String>.
+            let repo_outputs: eyre::Result<Vec<String>> = repo_infos
                 .into_par_iter()
                 .map(|(reposlug, pr_number, _)| {
-                    let repo = Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
+                    let repo = repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
                     repo.review(action, summary)
                 })
-                .collect::<Result<Vec<String>>>()?;
-            Ok((change_id, author, repo_outputs))
+                .collect();
+            repo_outputs.map(|outs| (change_id, author, outs))
         })
-        .collect::<Result<Vec<(String, String, Vec<String>)>>>()?;
+        .collect();
 
+    let output_groups = output_groups?;
     // 8. Print the final hierarchical output.
     for (change_id, author, repo_outputs) in output_groups {
         println!("{} ({})", change_id, author);

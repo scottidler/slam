@@ -238,7 +238,6 @@ pub enum ReviewAction {
     Ls {
         #[arg(
             value_name = "CHANGE_ID_PTNS",
-            default_value = "SLAM*",
             num_args = 0..,
             help = "Optional list of Change IDs to filter by. Uses prefix matching (e.g. Change IDs starting with SLAM)"
         )]
