@@ -23,7 +23,7 @@ mod diff;
 mod repo;
 mod utils;
 
-use cli::{SlamCli, get_cli_tool_status};
+use cli::{SlamCli, CreateAction, ReviewAction, get_cli_tool_status};
 use repo::{Change, Repo};
 
 fn main() -> Result<()> {
@@ -73,18 +73,14 @@ fn main() -> Result<()> {
     info!("Starting SLAM");
 
     match cli.command {
-        cli::SlamCommand::Create {
-            files,
-            delete,
-            sub,
-            regex,
-            change_id,
-            buffer,
-            commit,
-            repos,
-        } => {
-            let change = Change::from_args(delete, &sub, &regex);
-            process_create_command(files, change, change_id, buffer, commit, repos)?;
+        cli::SlamCommand::Create { files, change_id, buffer, repos, action } => {
+            // Extract the change and commit message from the nested CreateAction.
+            let (change, commit_msg) = match action {
+                CreateAction::Delete { commit } => (Some(Change::Delete), commit),
+                CreateAction::Sub { ptn, repl, commit } => (Some(Change::Sub(ptn, repl)), commit),
+                CreateAction::Regex { ptn, repl, commit } => (Some(Change::Regex(ptn, repl)), commit),
+            };
+            process_create_command(files, change, change_id, buffer, commit_msg, repos)?;
         }
         cli::SlamCommand::Review { org, repos, action } => {
             process_review_command(org, &action, repos)?;
@@ -155,7 +151,7 @@ fn filter_repos(all_reposlugs: Vec<String>, reposlug_ptns: Vec<String>) -> Vec<S
 
 fn process_review_command(
     org: String,
-    action: &cli::Action,
+    action: &ReviewAction,
     reposlug_ptns: Vec<String>,
 ) -> Result<()> {
     // 1. Get all repos in the organization.
@@ -194,14 +190,14 @@ fn process_review_command(
 
     // 4. Define a filtering function based on the CLI action.
     let change_id_filter: Box<dyn Fn(&String) -> bool> = match action {
-        cli::Action::Ls { change_id_ptns, .. } => {
+        ReviewAction::Ls { change_id_ptns, .. } => {
             Box::new(move |key: &String| {
                 change_id_ptns.iter().any(|ptn| {
                     Pattern::new(ptn).map_or(false, |glob_pat| glob_pat.matches(key))
                 })
             })
         }
-        cli::Action::Approve { change_id, .. } | cli::Action::Delete { change_id, .. } => {
+        ReviewAction::Approve { change_id, .. } | ReviewAction::Delete { change_id, .. } => {
             Box::new(move |key: &String| key == change_id)
         }
     };
@@ -234,7 +230,7 @@ fn process_review_command(
         return Ok(());
     }
 
-    let summary = matches!(action, cli::Action::Ls { .. }) && filtered_pr_map.len() > 1;
+    let summary = matches!(action, ReviewAction::Ls { .. }) && filtered_pr_map.len() > 1;
 
     // 6. Convert the map into a sorted vector of (change_id, Vec<(reposlug, pr_number, author)>).
     let mut groups: Vec<(String, Vec<(String, u64, String)>)> = filtered_pr_map.into_iter().collect();
@@ -244,13 +240,11 @@ fn process_review_command(
     let output_groups: Vec<(String, String, Vec<String>)> = groups
         .into_iter()
         .map(|(change_id, repo_infos)| {
-            // Extract the author in its own block so that the borrow ends here.
-            let author = {
-                if let Some((_, _, author)) = repo_infos.first() {
-                    author.clone()
-                } else {
-                    "unknown".to_string()
-                }
+            // Extract the author from the first repo in the group.
+            let author = if let Some((_, _, author)) = repo_infos.first() {
+                author.clone()
+            } else {
+                "unknown".to_string()
             };
             let repo_outputs: Vec<String> = repo_infos
                 .into_par_iter()

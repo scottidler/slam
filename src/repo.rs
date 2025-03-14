@@ -15,20 +15,6 @@ pub enum Change {
     Regex(String, String),
 }
 
-impl Change {
-    pub fn from_args(delete: bool, sub: &Option<Vec<String>>, regex: &Option<Vec<String>>) -> Option<Self> {
-        if delete {
-            Some(Self::Delete)
-        } else if let Some(sub_args) = sub {
-            Some(Self::Sub(sub_args[0].clone(), sub_args[1].clone()))
-        } else if let Some(regex_args) = regex {
-            Some(Self::Regex(regex_args[0].clone(), regex_args[1].clone()))
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub reponame: String,
@@ -182,16 +168,16 @@ impl Repo {
         Ok(diff_output)
     }
 
-    pub fn review(&self, action: &cli::Action, summary: bool) -> Result<String> {
+    pub fn review(&self, action: &cli::ReviewAction, summary: bool) -> Result<String> {
         match action {
-            cli::Action::Ls { buffer, .. } => {
+            cli::ReviewAction::Ls { buffer, .. } => {
                 if summary {
                     Ok(format!("{} (# {})", self.reponame, self.pr_number))
                 } else {
                     Ok(self.get_review_diff(*buffer))
                 }
             }
-            cli::Action::Approve { admin_override, .. } => {
+            cli::ReviewAction::Approve { admin_override, .. } => {
                 match git::approve_pr(&self.reponame, self.pr_number) {
                     Ok(_) => {
                         info!("PR for '{}' approved.", self.reponame);
@@ -224,7 +210,7 @@ impl Repo {
                 }
                 Ok(format!("Repo: {} -> Approved PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }
-            cli::Action::Delete { change_id: _ } => {
+            cli::ReviewAction::Delete { change_id: _ } => {
                 let mut messages = Vec::new();
                 if self.pr_number != 0 {
                     git::close_pr(&self.reponame, self.pr_number)?;
