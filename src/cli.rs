@@ -2,8 +2,9 @@ use clap::{Parser, Subcommand};
 use chrono::Local;
 
 pub fn default_change_id() -> String {
-    let date = Local::now().format("%Y-%m-%d").to_string();
-    format!("SLAM-{}", date)
+    let now = Local::now();
+    let ts = now.format("%Y-%m-%dT%H-%M-%S").to_string();
+    format!("SLAM-{}", ts)
 }
 
 #[derive(Parser, Debug)]
