@@ -7,6 +7,18 @@ pub fn default_change_id() -> String {
     format!("SLAM-{}", ts)
 }
 
+fn validate_buffer(s: &str) -> Result<usize, String> {
+    s.parse::<usize>()
+        .map_err(|_| format!("`{}` isn't a valid number", s))
+        .and_then(|v| {
+            if (1..=3).contains(&v) {
+                Ok(v)
+            } else {
+                Err(format!("Buffer must be between 1 and 3, but got {}", v))
+            }
+        })
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "slam",
@@ -33,7 +45,13 @@ pub enum SlamCommand {
         )]
         change_id: String,
 
-        #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
+        #[arg(
+            short = 'b',
+            long,
+            default_value_t = 1,
+            value_parser = validate_buffer,
+            help = "Number of context lines in the diff output (must be between 1 and 3)"
+        )]
         buffer: usize,
 
         #[arg(help = "Repository names to filter", value_name = "REPOS", default_value = "")]
@@ -113,7 +131,13 @@ pub enum ReviewAction {
         )]
         change_id_ptns: Vec<String>,
 
-        #[arg(short = 'b', long, default_value_t = 1, help = "Number of context lines in the diff output")]
+        #[arg(
+            short = 'b',
+            long,
+            default_value_t = 1,
+            value_parser = validate_buffer,
+            help = "Number of context lines in the diff output (must be between 1 and 3)"
+        )]
         buffer: usize,
     },
     #[command(about = "Approve a specific PR & merge it per matched repos, identified by its Change ID")]
