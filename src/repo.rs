@@ -76,9 +76,21 @@ impl Repo {
         }
     }
 
-    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool) -> String {
+    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool, no_diff: bool) -> String {
         let repo_path = root.join(&self.reponame);
         let mut file_diffs = String::new();
+
+        // When no_diff is active, simply list the matched files.
+        if no_diff {
+            for file in &self.files {
+                file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
+            }
+            if file_diffs.trim().is_empty() {
+                return "".to_string();
+            } else {
+                return format!("{}\n{}", self.reponame, file_diffs);
+            }
+        }
 
         if let Some(change) = self.change.as_ref() {
             match change {
@@ -102,18 +114,12 @@ impl Repo {
                                 ));
                             }
                         }
-                        // Only add if there is a non-empty diff (excluding whitespace)
                         if !file_diff.trim().is_empty() {
                             file_diffs.push_str(&file_diff);
                         }
                     }
-                    if commit {
-                        for file in &self.files {
-                            let full_path = repo_path.join(file);
-                            let _ = std::fs::remove_file(&full_path);
-                        }
-                    }
                 }
+                // For Sub and Regex actions
                 _ => {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
@@ -133,7 +139,6 @@ impl Repo {
                 file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
             }
         }
-        // If no file diffs were collected, return an empty string
         if file_diffs.trim().is_empty() {
             "".to_string()
         } else {
@@ -141,11 +146,11 @@ impl Repo {
         }
     }
 
-
-    pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>) -> Result<String> {
+    pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>, no_diff: bool) -> Result<String> {
         let repo_path = root.join(&self.reponame);
         git::preflight_checks(&repo_path)?;
-        let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some());
+        // Pass no_diff into show_create_diff
+        let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some(), no_diff);
         if commit_msg.is_none() {
             return Ok(diff_output);
         }

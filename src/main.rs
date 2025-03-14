@@ -133,12 +133,11 @@ fn process_create_command(
         return Ok(());
     }
 
-    // An action was provided; extract the change and commit message.
-    let (change, commit_msg) = match action {
-        Some(CreateAction::Delete { commit }) => (Some(Change::Delete), commit),
-        Some(CreateAction::Sub { ptn, repl, commit }) => (Some(Change::Sub(ptn, repl)), commit),
-        Some(CreateAction::Regex { ptn, repl, commit }) => (Some(Change::Regex(ptn, repl)), commit),
-        None => (None, None), // This branch is unreachable due to the above check.
+    // An action was provided; extract the change, commit message, and the no_diff flag.
+    let (change, commit_msg, no_diff) = match action.unwrap() {
+        CreateAction::Delete { commit, no_diff } => (Some(Change::Delete), commit, no_diff),
+        CreateAction::Sub { ptn, repl, commit, no_diff } => (Some(Change::Sub(ptn, repl)), commit, no_diff),
+        CreateAction::Regex { ptn, repl, commit, no_diff } => (Some(Change::Regex(ptn, repl)), commit, no_diff),
     };
 
     // Update the filtered repositories with the extracted change.
@@ -153,7 +152,7 @@ fn process_create_command(
     // Process each repository (committing changes, creating diffs, etc.)
     let outputs: Vec<String> = filtered_repos
         .par_iter()
-        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref()))
+        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), no_diff))
         .collect::<eyre::Result<Vec<String>>>()?;
 
     let non_empty_outputs: Vec<String> = outputs
