@@ -22,6 +22,7 @@ mod diff;
 mod git;
 mod repo;
 mod utils;
+mod transaction;
 
 fn main() -> Result<()> {
     if env::var("RUST_LOG").is_err() {
