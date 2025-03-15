@@ -3,22 +3,23 @@ use std::{
     fs,
     io,
     io::Write,
+    collections::HashMap,
 };
 
 use clap::{CommandFactory, FromArgMatches};
 use eyre::Result;
-use log::{info, debug, warn};
-use rayon::prelude::*;
-use itertools::Itertools;
 use glob::Pattern;
+use itertools::Itertools;
+use log::{debug, error, info, warn};
+use rayon::prelude::*;
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
 }
 
 mod cli;
-mod git;
 mod diff;
+mod git;
 mod repo;
 mod utils;
 
@@ -49,8 +50,8 @@ fn main() -> Result<()> {
         Box::new(io::stdout())
     };
 
-    let env = env_logger::Env::default().filter_or("RUST_LOG", "info");
-    env_logger::Builder::from_env(env)
+    let env_logger_env = env_logger::Env::default().filter_or("RUST_LOG", "info");
+    env_logger::Builder::from_env(env_logger_env)
         .target(env_logger::Target::Pipe(log_writer))
         .format(|buf, record| {
             writeln!(
@@ -166,25 +167,7 @@ fn process_create_command(
     Ok(())
 }
 
-fn filter_repos(all_reposlugs: Vec<String>, reposlug_ptns: Vec<String>) -> Vec<String> {
-    if reposlug_ptns.is_empty() || reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
-        return all_reposlugs;
-    }
-    all_reposlugs
-        .into_iter()
-        .filter(|repo| {
-            reposlug_ptns.iter().any(|ptn| {
-                if let Ok(pattern) = Pattern::new(ptn) {
-                    pattern.matches(repo)
-                } else {
-                    false
-                }
-            })
-        })
-        .collect()
-}
-
-fn process_review_command(
+pub fn process_review_command(
     org: String,
     action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
@@ -195,17 +178,29 @@ fn process_review_command(
     debug!("All repos:\n{}", all_reposlugs.iter().join("\n"));
 
     // 2. Filter repository slugs using glob-style matching.
-    let filtered_reposlugs = filter_repos(all_reposlugs, reposlug_ptns);
+    let filtered_reposlugs = if reposlug_ptns.is_empty() || reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
+        all_reposlugs
+    } else {
+        all_reposlugs
+            .into_iter()
+            .filter(|repo| {
+                reposlug_ptns.iter().any(|ptn| {
+                    if let Ok(pattern) = Pattern::new(ptn) {
+                        pattern.matches(repo)
+                    } else {
+                        false
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    };
     info!(
         "After user input filter, {} repos remain",
         filtered_reposlugs.len()
     );
-    debug!(
-        "Filtered repos:\n{}",
-        filtered_reposlugs.iter().join("\n")
-    );
+    debug!("Filtered repos:\n{}", filtered_reposlugs.iter().join("\n"));
 
-    // 3. Get the PR map.
+    // 3. Get the PR map (titles -> Vec of (reposlug, pr_number, author)).
     let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
     debug!(
         "PR map:\n{}",
@@ -223,20 +218,18 @@ fn process_review_command(
             .join("\n")
     );
 
-    // 4. Define a filtering closure that enforces the change ID to start with "SLAM".
+    // 4. Build a filter to ensure we only handle PRs starting with "SLAM" and matching user input.
     let change_id_filter: Box<dyn Fn(&String) -> bool> = match action {
         cli::ReviewAction::Ls { change_id_ptns, .. } => {
             Box::new(move |key: &String| {
-                // Only consider keys starting with "SLAM".
                 if !key.starts_with("SLAM") {
                     return false;
                 }
-                // If no extra patterns provided, allow it.
                 if change_id_ptns.is_empty() {
                     true
                 } else {
                     change_id_ptns.iter().any(|ptn| {
-                        if let Ok(glob_pat) = glob::Pattern::new(ptn) {
+                        if let Ok(glob_pat) = Pattern::new(ptn) {
                             glob_pat.matches(key)
                         } else {
                             false
@@ -246,60 +239,70 @@ fn process_review_command(
             })
         }
         cli::ReviewAction::Approve { change_id, .. }
-        | cli::ReviewAction::Delete { change_id, .. } => Box::new(move |key: &String| {
-            key.starts_with("SLAM") && key == change_id
-        }),
+        | cli::ReviewAction::Delete { change_id, .. } => {
+            let change_id_owned = change_id.to_owned();
+            Box::new(move |key: &String| key.starts_with("SLAM") && key == &change_id_owned)
+        },
     };
 
-    // 5. Filter the PR map using the closure.
-    let filtered_pr_map: std::collections::HashMap<String, Vec<(String, u64, String)>> =
-        pr_map.into_iter().filter(|(key, _)| change_id_filter(key)).collect();
+    // 5. Filter the PR map to only keep entries that match our filter.
+    let filtered_pr_map: HashMap<String, Vec<(String, u64, String)>> =
+        pr_map
+            .into_iter()
+            .filter(|(key, _)| change_id_filter(&key.to_string()))
+            .map(|(key, vec)| {
+                let key_owned = key.to_string();
+                let vec_owned = vec
+                    .into_iter()
+                    .map(|(repo, pr, author)| (repo.to_string(), pr, author.to_string()))
+                    .collect();
+                (key_owned, vec_owned)
+            })
+            .collect();
 
     if filtered_pr_map.is_empty() {
         warn!("No open PRs found matching change_id(s) starting with 'SLAM'.");
         return Ok(());
     }
 
-    // 6. Determine summary mode: if no change_id patterns were provided, we only show summary.
+    // 6. Determine if we are in "summary mode" (for listing only).
     let summary = match action {
         cli::ReviewAction::Ls { change_id_ptns, .. } => change_id_ptns.is_empty(),
         _ => false,
     };
 
-    // 7. Convert the map into a sorted vector and process each group concurrently.
+    // 7. Sort the groups by change_id for a stable output.
     let mut groups: Vec<(String, Vec<(String, u64, String)>)> = filtered_pr_map.into_iter().collect();
     groups.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let output_groups: eyre::Result<Vec<(String, String, Vec<String>)>> = groups
-        .into_iter()
-        .map(|(change_id, repo_infos)| {
-            // Use the first repo's author for the header (or "unknown" if empty)
-            let author = repo_infos
-                .first()
-                .map(|(_, _, author)| author.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            // Process each repo concurrently. Each repo.review returns a Result<String>.
-            let repo_outputs: eyre::Result<Vec<String>> = repo_infos
-                .into_par_iter()
-                .map(|(reposlug, pr_number, _)| {
-                    let repo = repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
-                    repo.review(action, summary)
-                })
-                .collect();
-            repo_outputs.map(|outs| (change_id, author, outs))
-        })
-        .collect();
-
-    let output_groups = output_groups?;
-    // 8. Print the final hierarchical output.
-    for (change_id, author, repo_outputs) in output_groups {
+    // 8. Process each change_id group.
+    for (change_id, repo_infos) in groups {
+        let author = repo_infos
+            .first()
+            .map(|(_, _, author)| author.clone())
+            .unwrap_or_else(|| "unknown".to_string());
         println!("{} ({})", change_id, author);
-        let joined = repo_outputs
-            .into_iter()
-            .map(|output| utils::indent(&output, 2))
-            .collect::<Vec<_>>()
-            .join("\n");
-        println!("{}\n", joined);
+
+        // Process each repo in parallel; catch and log errors individually.
+        let repo_outputs: Vec<String> = repo_infos
+            .into_par_iter()
+            .map(|(reposlug, pr_number, _)| -> String {
+                let repo = repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
+                match repo.review(action, summary) {
+                    Ok(msg) => utils::indent(&msg, 2),
+                    Err(e) => {
+                        error!("Review failed for repo {}: {}", reposlug, e);
+                        utils::indent(&format!("Repo {} failed: {}", reposlug, e), 2)
+                    }
+                }
+            })
+            .collect();
+
+        for output in repo_outputs {
+            println!("{}", output);
+        }
+        println!();
     }
+
     Ok(())
 }
