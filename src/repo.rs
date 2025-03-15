@@ -345,17 +345,17 @@ impl Repo {
 
                 // Check that the PR is not a draft.
                 if status.draft {
-                    return Err(eyre::eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reponame));
+                    return Err(eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reponame));
                 }
 
                 // Ensure that the PR is mergeable (i.e. properly rebased on HEAD).
                 if !status.mergeable {
-                    return Err(eyre::eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reponame));
+                    return Err(eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reponame));
                 }
 
                 // Check that all status checks have passed.
                 if !status.checked {
-                    return Err(eyre::eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reponame));
+                    return Err(eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reponame));
                 }
 
                 // Approve the PR if it hasn't already been reviewed.

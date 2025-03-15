@@ -90,7 +90,6 @@ fn process_create_command(
     buffer: usize,
     user_repo_specs: Vec<String>,
 ) -> Result<()> {
-
     std::env::remove_var("GITHUB_TOKEN");
 
     let root = std::env::current_dir()?;
@@ -102,6 +101,8 @@ fn process_create_command(
             discovered_repos.push(repo);
         }
     }
+    // Save the total number of discovered repos.
+    let total = discovered_repos.len();
 
     let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
@@ -117,25 +118,27 @@ fn process_create_command(
         filtered_repos.retain(|repo| !repo.files.is_empty());
     }
 
-    // Dry run: if no action is provided, just print the matched repos (and files if applicable)
+    // If no action is provided, this is a dry run.
     if action.is_none() {
         if filtered_repos.is_empty() {
             println!("No repositories matched your criteria.");
         } else {
             println!("Matched repositories:");
-            for repo in filtered_repos {
+            for repo in &filtered_repos {
                 println!("  {}", repo.reponame);
                 if files.is_some() {
-                    for file in repo.files {
+                    for file in &repo.files {
                         println!("    {}", file);
                     }
                 }
             }
+            // Print match count based on the filtered list.
+            println!("\n{}/{}", filtered_repos.len(), total);
         }
         return Ok(());
     }
 
-    // An action was provided; extract the change, commit message, and the no_diff flag.
+    // Extract the change, commit message, and the no_diff flag.
     let (change, commit_msg, no_diff) = match action.unwrap() {
         cli::CreateAction::Delete { commit, no_diff } => (Some(repo::Change::Delete), commit, no_diff),
         cli::CreateAction::Sub { ptn, repl, commit, no_diff } => (Some(repo::Change::Sub(ptn, repl)), commit, no_diff),
@@ -155,19 +158,23 @@ fn process_create_command(
     let outputs: Vec<String> = filtered_repos
         .par_iter()
         .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), no_diff))
-        .collect::<eyre::Result<Vec<String>>>()?;
+        .collect::<Result<Vec<String>>>()?;
 
-    let non_empty_outputs: Vec<String> = outputs
+    // Only consider nonempty diff outputs.
+    let count: Vec<String> = outputs
         .into_iter()
         .filter(|s| !s.trim().is_empty())
         .collect();
 
-    if !non_empty_outputs.is_empty() {
+    if !count.is_empty() {
         println!("{}", change_id);
-        for output in non_empty_outputs {
+        for output in &count {
             println!("{}\n", utils::indent(&output, 2));
         }
     }
+    // When an action is provided (sub/regex), count the repos that actually produced changes.
+    println!("{}/{}", count.len(), total);
+
     Ok(())
 }
 
@@ -181,7 +188,7 @@ pub fn process_review_command(
     org: String,
     action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
-) -> eyre::Result<()> {
+) -> Result<()> {
 
     let service_account_pat = load_service_account_pat()?;
     std::env::set_var("GITHUB_TOKEN", service_account_pat);
