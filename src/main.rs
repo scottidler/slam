@@ -89,6 +89,9 @@ fn process_create_command(
     buffer: usize,
     user_repo_specs: Vec<String>,
 ) -> Result<()> {
+
+    std::env::remove_var("GITHUB_TOKEN");
+
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 
@@ -167,11 +170,21 @@ fn process_create_command(
     Ok(())
 }
 
+fn load_service_account_pat() -> std::io::Result<String> {
+    let home = env::var("HOME").expect("HOME environment variable not set");
+    let token_path = format!("{}/.config/github/tokens/service_account_pat", home);
+    fs::read_to_string(token_path).map(|s| s.trim().to_string())
+}
+
 pub fn process_review_command(
     org: String,
     action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
 ) -> eyre::Result<()> {
+
+    let service_account_pat = load_service_account_pat()?;
+    std::env::set_var("GITHUB_TOKEN", service_account_pat);
+
     // 1. Get all repos in the organization.
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);

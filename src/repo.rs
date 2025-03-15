@@ -149,12 +149,14 @@ impl Repo {
     pub fn create(&self, root: &Path, buffer: usize, commit_msg: Option<&str>, no_diff: bool) -> Result<String> {
         let repo_path = root.join(&self.reponame);
         git::preflight_checks(&repo_path)?;
-        // Pass no_diff into show_create_diff
+        // Generate and capture the diff output; pass the commit flag (true if commit_msg is provided)
         let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some(), no_diff);
+        // If no commit message is provided, just return the diff output (dry run)
         if commit_msg.is_none() {
             return Ok(diff_output);
         }
         let commit_msg = commit_msg.unwrap();
+        // Check if there is an existing PR; if so, close it and delete the branch before proceeding.
         let pr_number = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
         if pr_number != 0 {
             warn!(
@@ -163,16 +165,25 @@ impl Repo {
             );
             git::close_pr(&self.reponame, pr_number)?;
         }
+        // Clean up any pre-existing branch state by deleting both local and remote branches.
         git::delete_local_branch(&repo_path, &self.change_id)?;
         git::delete_remote_branch(&repo_path, &self.change_id)?;
+        // Check out (or create) the branch for this change.
         git::checkout_branch(&repo_path, &self.change_id)?;
+        // Stage all changes in the repository.
         git::stage_files(&repo_path)?;
+        // If there are changes, commit them and push the branch. Otherwise, push the branch even if clean.
         if !git::is_working_tree_clean(&repo_path) {
             git::commit_changes(&repo_path, commit_msg)?;
             git::push_branch(&repo_path, &self.change_id)?;
         } else {
-            info!("No changes to commit in '{}'", self.reponame);
+            info!(
+                "No changes to commit in '{}'. Pushing branch to remote to allow PR creation.",
+                self.reponame
+            );
+            git::push_branch(&repo_path, &self.change_id)?;
         }
+        // Finally, create the pull request.
         git::create_pr(&repo_path, &self.change_id, commit_msg);
         Ok(diff_output)
     }

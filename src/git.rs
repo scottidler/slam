@@ -221,13 +221,8 @@ pub fn delete_local_branch(repo_path: &Path, branch: &str) -> Result<()> {
         info!("Deleted local branch '{}' in '{}'", branch, repo_path.display());
         Ok(())
     } else {
-        warn!(
-            "Failed to delete local branch '{}' in '{}': {}",
-            branch,
-            repo_path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(())
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        Err(eyre!("Failed to delete local branch '{}' in '{}': {}", branch, repo_path.display(), err_msg))
     }
 }
 
