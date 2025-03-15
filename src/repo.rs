@@ -77,7 +77,7 @@ impl Repo {
         }
     }
 
-    pub fn show_create_diff(&self, root: &Path, buffer: usize, commit: bool, no_diff: bool) -> String {
+    pub fn create_diff(&self, root: &Path, buffer: usize, commit: bool, no_diff: bool) -> String {
         let repo_path = root.join(&self.reponame);
         let mut file_diffs = String::new();
 
@@ -254,12 +254,12 @@ impl Repo {
 
         //--------------------------------------------------------------------------
         // 6. Apply file modifications and generate a diff.
-        //    This step calls show_create_diff which applies the changes (delete/sub/regex)
+        //    This step calls create_diff which applies the changes (delete/sub/regex)
         //    and returns a diff. Since these changes are irreversible, register a rollback
         //    that does "git reset --hard HEAD".
         //--------------------------------------------------------------------------
         info!("Applying file modifications for change '{}' in '{}'", self.change_id, self.reponame);
-        let diff_output = self.show_create_diff(root, buffer, true, no_diff);
+        let diff_output = self.create_diff(root, buffer, true, no_diff);
         transaction.add_rollback({
             let repo_path = repo_path.clone();
             move || {
@@ -334,7 +334,7 @@ impl Repo {
         let repo_path = root.join(&self.reponame);
         git::preflight_checks(&repo_path)?;
         // Generate and capture the diff output; pass the commit flag (true if commit_msg is provided)
-        let diff_output = self.show_create_diff(root, buffer, commit_msg.is_some(), no_diff);
+        let diff_output = self.create_diff(root, buffer, commit_msg.is_some(), no_diff);
         // If no commit message is provided, just return the diff output (dry run)
         if commit_msg.is_none() {
             return Ok(diff_output);
