@@ -526,6 +526,73 @@ pub fn commit_all(repo_path: &Path, message: &str) -> Result<()> {
     }
 }
 
+#[derive(serde::Deserialize, Debug)]
+pub struct PrStatus {
+    pub draft: bool,
+    pub mergeable: bool,
+    pub reviewed: bool,
+    pub checked: bool,
+}
+
+pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
+    // Call gh to view the PR and request the needed fields.
+    let output = Command::new("gh")
+        .args(&[
+            "pr", "view",
+            &pr_number.to_string(),
+            "--repo", repo_name,
+            "--json", "isDraft,mergeable,reviewDecision,statusCheckRollup",
+        ])
+        .output()
+        .map_err(|e| eyre!("Failed to execute gh pr view: {}", e))?;
+
+    if !output.status.success() {
+        return Err(eyre!(
+            "Failed to get PR status for {} PR #{}: {}",
+            repo_name,
+            pr_number,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    // Parse the output JSON.
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| eyre!("Failed to parse PR JSON: {}", e))?;
+
+    // 'isDraft' maps directly.
+    let draft = json["isDraft"].as_bool().unwrap_or(false);
+
+    // For mergeable, if the value is "MERGEABLE", we treat it as true.
+    let mergeable = match json["mergeable"].as_str() {
+        Some(s) if s == "MERGEABLE" => true,
+        _ => false,
+    };
+
+    // For reviewed, if reviewDecision equals "APPROVED", then true.
+    let reviewed = match json["reviewDecision"].as_str() {
+        Some(s) if s == "APPROVED" => true,
+        _ => false,
+    };
+
+    // For checked: if there is a statusCheckRollup array, ensure every check's conclusion is "SUCCESS".
+    let checked = if let Some(arr) = json["statusCheckRollup"].as_array() {
+        arr.iter().all(|check| {
+            check["conclusion"]
+                .as_str()
+                .unwrap_or("SUCCESS") == "SUCCESS"
+        })
+    } else {
+        true
+    };
+
+    Ok(PrStatus {
+        draft,
+        mergeable,
+        reviewed,
+        checked,
+    })
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

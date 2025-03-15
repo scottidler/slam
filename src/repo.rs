@@ -340,37 +340,49 @@ impl Repo {
                 }
             }
             cli::ReviewAction::Approve { admin_override, .. } => {
-                match git::approve_pr(&self.reponame, self.pr_number) {
-                    Ok(_) => {
-                        info!("PR for '{}' approved.", self.reponame);
-                    }
-                    Err(e) => {
-                        if e.to_string().contains("already approved") {
-                            warn!("PR {} is already approved; skipping re-approval.", self.pr_number);
-                        } else {
-                            error!("Approval failed for PR {}: {}", self.pr_number, e);
-                            println!("Error during approval for repo {}: {}", self.reponame, e);
-                            return Err(e);
-                        }
-                    }
+                // Retrieve the PR status using our simplified PrStatus struct.
+                let status = git::get_pr_status(&self.reponame, self.pr_number)?;
+
+                // Check that the PR is not a draft.
+                if status.draft {
+                    return Err(eyre::eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reponame));
                 }
+
+                // Ensure that the PR is mergeable (i.e. properly rebased on HEAD).
+                if !status.mergeable {
+                    return Err(eyre::eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reponame));
+                }
+
+                // Check that all status checks have passed.
+                if !status.checked {
+                    return Err(eyre::eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reponame));
+                }
+
+                // Approve the PR if it hasn't already been reviewed.
+                if status.reviewed {
+                    warn!("PR {} is already reviewed; skipping re-approval.", self.pr_number);
+                } else {
+                    git::approve_pr(&self.reponame, self.pr_number)?;
+                    info!("PR {} approved for repo '{}'.", self.pr_number, self.reponame);
+                }
+
+                // Merge the PR.
                 match git::merge_pr(&self.reponame, self.pr_number, *admin_override) {
                     Ok(()) => {
-                        info!("Successfully merged '{}' via remote merge.", self.reponame);
+                        info!("Successfully merged PR {} for repo '{}'.", self.pr_number, self.reponame);
                     }
                     Err(merge_err) => {
                         if merge_err.to_string().contains("Merge conflict") {
-                            warn!("Merge conflict detected for repo {}. A rebase is required via the GitHub UI or another remote process.", self.reponame);
-                            println!("Error: Merge conflict detected for repo {}. Please rebase manually using the GitHub UI.", self.reponame);
+                            warn!("Merge conflict detected for repo {}. A rebase is required.", self.reponame);
                             return Err(merge_err);
                         } else {
                             error!("Merge failed for repo {}: {}", self.reponame, merge_err);
-                            println!("Error: Merge failed for repo {}: {}", self.reponame, merge_err);
                             return Err(merge_err);
                         }
                     }
                 }
-                Ok(format!("Repo: {} -> Approved PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
+
+                Ok(format!("Repo: {} -> Approved and merged PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }
             cli::ReviewAction::Delete { change_id: _ } => {
                 let mut messages = Vec::new();
