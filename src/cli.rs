@@ -110,9 +110,8 @@ pub enum SlamCommand {
             short = 'r',
             long,
             help = "Repository names to filter",
-            default_value = ""
         )]
-        repos: Vec<String>,
+        repo_ptns: Vec<String>,
 
         #[command(subcommand)]
         action: Option<CreateAction>,
@@ -136,7 +135,7 @@ pub enum SlamCommand {
             help = "Repository names to filter",
             default_value = ""
         )]
-        repos: Vec<String>,
+        repo_ptns: Vec<String>,
 
         #[command(subcommand)]
         action: ReviewAction,

@@ -71,11 +71,11 @@ fn main() -> Result<()> {
     info!("Starting SLAM");
 
     match cli.command {
-        cli::SlamCommand::Create { files, change_id, buffer, repos, action } => {
-            process_create_command(files, action, change_id, buffer, repos)?;
+        cli::SlamCommand::Create { files, change_id, buffer, repo_ptns, action } => {
+            process_create_command(files, action, change_id, buffer, repo_ptns)?;
         }
-        cli::SlamCommand::Review { org, repos, action } => {
-            process_review_command(org, &action, repos)?;
+        cli::SlamCommand::Review { org, repo_ptns, action } => {
+            process_review_command(org, &action, repo_ptns)?;
         }
     }
 
@@ -88,7 +88,7 @@ fn process_create_command(
     action: Option<cli::CreateAction>,
     change_id: String,
     buffer: usize,
-    user_repo_specs: Vec<String>,
+    repo_ptns: Vec<String>,
 ) -> Result<()> {
     std::env::remove_var("GITHUB_TOKEN");
 
@@ -126,13 +126,13 @@ fn process_create_command(
     let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
         .filter(|repo| {
-            user_repo_specs.is_empty()
-                || user_repo_specs.iter().any(|spec| repo.reponame.contains(spec))
+            repo_ptns.is_empty()
+                || repo_ptns.iter().any(|spec| repo.reponame.contains(spec))
         })
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
-    if !user_repo_specs.is_empty() {
+    if !repo_ptns.is_empty() {
         status.push(format!("{}{}", filtered_repos.len(), repos_emoji));
     }
 
@@ -157,7 +157,7 @@ fn process_create_command(
                 }
             }
             status.reverse();
-            println!("\n{}", status.join(" | "));
+            println!("\n  {}", status.join(" | "));
         }
         return Ok(());
     }
@@ -182,7 +182,7 @@ fn process_create_command(
     }
 
     status.reverse();
-    println!("{}", status.join(" | "));
+    println!("  {}", status.join(" | "));
 
     Ok(())
 }
