@@ -97,11 +97,11 @@ fn process_create_command(
     let files_emoji = "📄";
     let diffs_emoji = "📝";
 
-    // Match once on the optional action. If Some, call into_parts to get (change, commit_msg, no_diff).
-    let (change, commit_msg, no_diff) = match action {
+    // Match once on the optional action. If Some, call into_parts to get (change, commit_msg, simplified).
+    let (change, commit_msg, simplified) = match action {
         Some(action) => {
-            let (change, commit_msg, no_diff) = action.decompose();
-            (Some(change), commit_msg, no_diff)
+            let (change, commit_msg, simplified) = action.decompose();
+            (Some(change), commit_msg, simplified)
         }
         None => (None, None, false),
     };
@@ -165,7 +165,7 @@ fn process_create_command(
     // Process each repository (committing changes, creating diffs, etc.)
     let outputs: Vec<String> = filtered_repos
         .par_iter()
-        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), no_diff))
+        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), simplified))
         .collect::<Result<Vec<String>>>()?;
 
     let matches: Vec<String> = outputs

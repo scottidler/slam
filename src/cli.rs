@@ -159,11 +159,11 @@ pub enum CreateAction {
         commit: Option<String>,
 
         #[arg(
-            short = 'n',
-            long = "no-diff",
+            short = 's',
+            long,
             help = "Do not display diff output; only list matched files"
         )]
-        no_diff: bool,
+        simplified: bool,
     },
     #[command(
         about = "Substring and replacement (requires two arguments)"
@@ -191,11 +191,11 @@ pub enum CreateAction {
         commit: Option<String>,
 
         #[arg(
-            short = 'n',
-            long = "no-diff",
+            short = 's',
+            long,
             help = "Do not display diff output; only list matched files"
         )]
-        no_diff: bool,
+        simplified: bool,
     },
     #[command(
         about = "Regex pattern and replacement (requires two arguments)"
@@ -223,20 +223,20 @@ pub enum CreateAction {
         commit: Option<String>,
 
         #[arg(
-            short = 'n',
-            long = "no-diff",
+            short = 's',
+            long,
             help = "Do not display diff output; only list matched files"
         )]
-        no_diff: bool,
+        simplified: bool,
     },
 }
 
 impl CreateAction {
     pub fn decompose(self) -> (repo::Change, Option<String>, bool) {
         match self {
-            CreateAction::Delete { commit, no_diff } => (repo::Change::Delete, commit, no_diff),
-            CreateAction::Sub { ptn, repl, commit, no_diff } => (repo::Change::Sub(ptn, repl), commit, no_diff),
-            CreateAction::Regex { ptn, repl, commit, no_diff } => (repo::Change::Regex(ptn, repl), commit, no_diff),
+            CreateAction::Delete { commit, simplified } => (repo::Change::Delete, commit, simplified),
+            CreateAction::Sub { ptn, repl, commit, simplified } => (repo::Change::Sub(ptn, repl), commit, simplified),
+            CreateAction::Regex { ptn, repl, commit, simplified } => (repo::Change::Regex(ptn, repl), commit, simplified),
         }
     }
 }

@@ -77,12 +77,12 @@ impl Repo {
         }
     }
 
-    pub fn create_diff(&self, root: &Path, buffer: usize, commit: bool, no_diff: bool) -> String {
+    pub fn create_diff(&self, root: &Path, buffer: usize, commit: bool, simplified: bool) -> String {
         let repo_path = root.join(&self.reponame);
         let mut file_diffs = String::new();
 
-        // When no_diff is active, simply list the matched files.
-        if no_diff {
+        // When simplified is active, simply list the matched files.
+        if simplified {
             for file in &self.files {
                 file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
             }
@@ -159,7 +159,7 @@ impl Repo {
         root: &Path,
         buffer: usize,
         commit_msg: Option<&str>,
-        no_diff: bool,
+        simplified: bool,
     ) -> eyre::Result<String> {
         // 0. Determine repository path and create a transaction.
         let repo_path = root.join(&self.reponame);
@@ -259,7 +259,7 @@ impl Repo {
         //    that does "git reset --hard HEAD".
         //--------------------------------------------------------------------------
         info!("Applying file modifications for change '{}' in '{}'", self.change_id, self.reponame);
-        let diff_output = self.create_diff(root, buffer, true, no_diff);
+        let diff_output = self.create_diff(root, buffer, true, simplified);
         transaction.add_rollback({
             let repo_path = repo_path.clone();
             move || {
