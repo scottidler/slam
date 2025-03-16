@@ -92,6 +92,11 @@ fn process_create_command(
 ) -> Result<()> {
     std::env::remove_var("GITHUB_TOKEN");
 
+    let total_emoji = "🏢";
+    let repos_emoji = "📦";
+    let files_emoji = "📄";
+    let diffs_emoji = "📝";
+
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
 
@@ -101,8 +106,9 @@ fn process_create_command(
             discovered_repos.push(repo);
         }
     }
-    // Save the total number of discovered repos.
-    let total = discovered_repos.len();
+    // Build a status accumulator as we go.
+    let mut status = Vec::new();
+    status.push(format!("{}{}", total_emoji, discovered_repos.len()));
 
     let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
@@ -113,9 +119,14 @@ fn process_create_command(
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
 
+    if !user_repo_specs.is_empty() {
+        status.push(format!("{}{}", repos_emoji, filtered_repos.len()));
+    }
+
     // If a files pattern is provided, filter out repos with no matched files.
     if files.is_some() {
         filtered_repos.retain(|repo| !repo.files.is_empty());
+        status.push(format!("{}{}", files_emoji, filtered_repos.len()));
     }
 
     // If no action is provided, this is a dry run.
@@ -132,8 +143,8 @@ fn process_create_command(
                     }
                 }
             }
-            // Print match count based on the filtered list.
-            println!("\n{}/{}", filtered_repos.len(), total);
+            status.reverse();
+            println!("\n{}", status.join("|"));
         }
         return Ok(());
     }
@@ -160,20 +171,21 @@ fn process_create_command(
         .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), no_diff))
         .collect::<Result<Vec<String>>>()?;
 
-    // Only consider nonempty diff outputs.
-    let count: Vec<String> = outputs
+    let matches: Vec<String> = outputs
         .into_iter()
         .filter(|s| !s.trim().is_empty())
         .collect();
 
-    if !count.is_empty() {
+    if !matches.is_empty() {
         println!("{}", change_id);
-        for output in &count {
+        for output in &matches {
             println!("{}\n", utils::indent(&output, 2));
         }
+        status.push(format!("{}{}", diffs_emoji, matches.len()));
     }
-    // When an action is provided (sub/regex), count the repos that actually produced changes.
-    println!("{}/{}", count.len(), total);
+
+    status.reverse();
+    println!("{}", status.join("|"));
 
     Ok(())
 }
