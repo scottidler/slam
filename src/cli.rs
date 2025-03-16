@@ -109,7 +109,7 @@ pub enum SlamCommand {
         #[arg(
             short = 'r',
             long,
-            help = "Repository names to filter",
+            help = "Patterns for repo filtering",
         )]
         repo_ptns: Vec<String>,
 
@@ -132,7 +132,7 @@ pub enum SlamCommand {
         #[arg(
             short = 'r',
             long,
-            help = "Repository names to filter",
+            help = "Patterns for repo filtering",
             default_value = ""
         )]
         repo_ptns: Vec<String>,
