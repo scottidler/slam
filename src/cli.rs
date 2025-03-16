@@ -87,7 +87,7 @@ pub enum SlamCommand {
             long,
             help = "Glob pattern to find files within each repository"
         )]
-        files: Option<String>,
+        files: Vec<String>,
 
         #[arg(
             short = 'x',

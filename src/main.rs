@@ -84,7 +84,7 @@ fn main() -> Result<()> {
 }
 
 fn process_create_command(
-    files: Option<String>,
+    files: Vec<String>,
     action: Option<cli::CreateAction>,
     change_id: String,
     buffer: usize,
@@ -97,7 +97,7 @@ fn process_create_command(
     let files_emoji = "📄";
     let diffs_emoji = "📝";
 
-    // Match once on the optional action. If Some, call into_parts to get (change, commit_msg, simplified).
+    // Match once on the optional action. If Some, call decompose to get (change, commit_msg, simplified).
     let (change, commit_msg, simplified) = match action {
         Some(action) => {
             let (change, commit_msg, simplified) = action.decompose();
@@ -126,8 +126,7 @@ fn process_create_command(
     let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
         .filter(|repo| {
-            repo_ptns.is_empty()
-                || repo_ptns.iter().any(|spec| repo.reponame.contains(spec))
+            repo_ptns.is_empty() || repo_ptns.iter().any(|spec| repo.reponame.contains(spec))
         })
         .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
         .collect();
@@ -136,8 +135,8 @@ fn process_create_command(
         status.push(format!("{}{}", filtered_repos.len(), repos_emoji));
     }
 
-    // If a files pattern is provided, filter out repos with no matched files.
-    if files.is_some() {
+    // If file patterns were provided, filter out repos with no matched files.
+    if !files.is_empty() {
         filtered_repos.retain(|repo| !repo.files.is_empty());
         status.push(format!("{}{}", filtered_repos.len(), files_emoji));
     }
@@ -150,7 +149,7 @@ fn process_create_command(
             println!("Matched repositories:");
             for repo in &filtered_repos {
                 println!("  {}", repo.reponame);
-                if files.is_some() {
+                if !files.is_empty() {
                     for file in &repo.files {
                         println!("    {}", file);
                     }

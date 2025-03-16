@@ -30,7 +30,7 @@ impl Repo {
         repo: &Path,
         root: &Path,
         change: &Option<Change>,
-        files_pattern: &Option<String>,
+        file_ptns: &[String],
         change_id: &str,
     ) -> Option<Self> {
         debug!("Creating repo entry for '{}'", repo.display());
@@ -45,17 +45,21 @@ impl Repo {
 
         let mut files = Vec::new();
 
-        if let Some(pattern) = files_pattern {
-            match find_files_in_repo(repo, pattern) {
-                Ok(matched_files) => {
-                    files.extend(matched_files.into_iter().map(|f| f.display().to_string()));
-                    files.sort();
-                }
-                Err(e) => {
-                    warn!("Failed to find files in '{}': {}", repo.display(), e);
-                    return None;
+        // If one or more file patterns were provided, find matches for each.
+        if !file_ptns.is_empty() {
+            for pattern in file_ptns {
+                match find_files_in_repo(repo, pattern) {
+                    Ok(matched_files) => {
+                        files.append(&mut matched_files.into_iter().map(|f| f.display().to_string()).collect());
+                    }
+                    Err(e) => {
+                        warn!("Failed to find files in '{}': {}", repo.display(), e);
+                        return None;
+                    }
                 }
             }
+            files.sort();
+            files.dedup();
         }
 
         Some(Self {
