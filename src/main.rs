@@ -92,7 +92,7 @@ fn process_create_command(
 ) -> Result<()> {
     std::env::remove_var("GITHUB_TOKEN");
 
-    let total_emoji = "🏢";
+    let total_emoji = "🔍";
     let repos_emoji = "📦";
     let files_emoji = "📄";
     let diffs_emoji = "📝";

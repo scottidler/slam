@@ -81,24 +81,12 @@ impl Repo {
         let repo_path = root.join(&self.reponame);
         let mut file_diffs = String::new();
 
-        // When simplified is active, simply list the matched files.
-        if simplified {
-            for file in &self.files {
-                file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
-            }
-            if file_diffs.trim().is_empty() {
-                return "".to_string();
-            } else {
-                return format!("{}\n{}", self.reponame, file_diffs);
-            }
-        }
-
         if let Some(change) = self.change.as_ref() {
             match change {
+                // For Delete, we always generate a detailed diff.
                 Change::Delete => {
                     for file in &self.files {
                         let mut file_diff = String::new();
-                        // Record file header diff
                         file_diff.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 2)));
                         let full_path = repo_path.join(file);
                         match std::fs::read_to_string(&full_path) {
@@ -120,15 +108,26 @@ impl Repo {
                         }
                     }
                 }
-                // For Sub and Regex actions
+                // For Sub and Regex, we want to run the file processing
+                // and then decide how to output based on simplified.
                 _ => {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
                             let mut file_diff = String::new();
-                            file_diff.push_str(&format!("{}\n", utils::indent(&format!("M {}", file), 2)));
-                            for line in diff.lines() {
-                                file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
+                            if simplified {
+                                file_diff.push_str(&format!(
+                                    "{}\n",
+                                    utils::indent(&format!("Matched file: {}", file), 2)
+                                ));
+                            } else {
+                                file_diff.push_str(&format!(
+                                    "{}\n",
+                                    utils::indent(&format!("M {}", file), 2)
+                                ));
+                                for line in diff.lines() {
+                                    file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
+                                }
                             }
                             file_diffs.push_str(&file_diff);
                         }
@@ -136,10 +135,15 @@ impl Repo {
                 }
             }
         } else {
+            // Fallback when no change is specified.
             for file in &self.files {
-                file_diffs.push_str(&format!("{}\n", utils::indent(&format!("Matched file: {}", file), 2)));
+                file_diffs.push_str(&format!(
+                    "{}\n",
+                    utils::indent(&format!("Matched file: {}", file), 2)
+                ));
             }
         }
+
         if file_diffs.trim().is_empty() {
             "".to_string()
         } else {
