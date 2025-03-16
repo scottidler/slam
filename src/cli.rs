@@ -7,6 +7,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use chrono::Local;
 
+use crate::repo;
 use crate::utils;
 
 pub fn default_change_id() -> String {
@@ -228,6 +229,16 @@ pub enum CreateAction {
         )]
         no_diff: bool,
     },
+}
+
+impl CreateAction {
+    pub fn decompose(self) -> (repo::Change, Option<String>, bool) {
+        match self {
+            CreateAction::Delete { commit, no_diff } => (repo::Change::Delete, commit, no_diff),
+            CreateAction::Sub { ptn, repl, commit, no_diff } => (repo::Change::Sub(ptn, repl), commit, no_diff),
+            CreateAction::Regex { ptn, repl, commit, no_diff } => (repo::Change::Regex(ptn, repl), commit, no_diff),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

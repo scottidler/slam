@@ -97,18 +97,31 @@ fn process_create_command(
     let files_emoji = "📄";
     let diffs_emoji = "📝";
 
+    // Match once on the optional action. If Some, call into_parts to get (change, commit_msg, no_diff).
+    let (change, commit_msg, no_diff) = match action {
+        Some(act) => {
+            let (change, commit_msg, no_diff) = act.decompose();
+            (Some(change), commit_msg, no_diff)
+        }
+        None => (None, None, false),
+    };
+
     let root = std::env::current_dir()?;
     let discovered_paths = git::find_git_repositories(&root)?;
-
     let mut discovered_repos = Vec::new();
+
+    // Create local repo entries using the extracted change (if any)
     for path in discovered_paths {
-        if let Some(repo) = repo::Repo::create_repo_from_local(&path, &root, &None, &files, &change_id) {
+        if let Some(repo) =
+            repo::Repo::create_repo_from_local(&path, &root, &change, &files, &change_id)
+        {
             discovered_repos.push(repo);
         }
     }
+
     // Build a status accumulator as we go.
     let mut status = Vec::new();
-    status.push(format!("{}{}", total_emoji, discovered_repos.len()));
+    status.push(format!("{}{}", discovered_repos.len(), total_emoji));
 
     let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
@@ -120,17 +133,17 @@ fn process_create_command(
         .collect();
 
     if !user_repo_specs.is_empty() {
-        status.push(format!("{}{}", repos_emoji, filtered_repos.len()));
+        status.push(format!("{}{}", filtered_repos.len(), repos_emoji));
     }
 
     // If a files pattern is provided, filter out repos with no matched files.
     if files.is_some() {
         filtered_repos.retain(|repo| !repo.files.is_empty());
-        status.push(format!("{}{}", files_emoji, filtered_repos.len()));
+        status.push(format!("{}{}", filtered_repos.len(), files_emoji));
     }
 
-    // If no action is provided, this is a dry run.
-    if action.is_none() {
+    // Dry-run: if no action (i.e. change is None), print repos and exit early.
+    if change.is_none() {
         if filtered_repos.is_empty() {
             println!("No repositories matched your criteria.");
         } else {
@@ -144,26 +157,10 @@ fn process_create_command(
                 }
             }
             status.reverse();
-            println!("\n{}", status.join("|"));
+            println!("\n{}", status.join(" | "));
         }
         return Ok(());
     }
-
-    // Extract the change, commit message, and the no_diff flag.
-    let (change, commit_msg, no_diff) = match action.unwrap() {
-        cli::CreateAction::Delete { commit, no_diff } => (Some(repo::Change::Delete), commit, no_diff),
-        cli::CreateAction::Sub { ptn, repl, commit, no_diff } => (Some(repo::Change::Sub(ptn, repl)), commit, no_diff),
-        cli::CreateAction::Regex { ptn, repl, commit, no_diff } => (Some(repo::Change::Regex(ptn, repl)), commit, no_diff),
-    };
-
-    // Update the filtered repositories with the extracted change.
-    let filtered_repos: Vec<_> = filtered_repos
-        .into_iter()
-        .map(|mut repo| {
-            repo.change = change.clone();
-            repo
-        })
-        .collect();
 
     // Process each repository (committing changes, creating diffs, etc.)
     let outputs: Vec<String> = filtered_repos
@@ -181,11 +178,11 @@ fn process_create_command(
         for output in &matches {
             println!("{}\n", utils::indent(&output, 2));
         }
-        status.push(format!("{}{}", diffs_emoji, matches.len()));
+        status.push(format!("{}{}", matches.len(), diffs_emoji));
     }
 
     status.reverse();
-    println!("{}", status.join("|"));
+    println!("{}", status.join(" | "));
 
     Ok(())
 }
