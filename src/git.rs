@@ -545,6 +545,7 @@ pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
         ])
         .output()
         .map_err(|e| eyre!("Failed to execute gh pr view: {}", e))?;
+    debug!("get_pr_status: output={:?}", output);
 
     if !output.status.success() {
         return Err(eyre!(

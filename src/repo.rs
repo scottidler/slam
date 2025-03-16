@@ -168,21 +168,21 @@ impl Repo {
         buffer: usize,
         commit_msg: Option<&str>,
         simplified: bool,
-    ) -> eyre::Result<String> {
-        // 0. Determine repository path and create a transaction.
+    ) -> Result<Option<String>> {
         let repo_path = root.join(&self.reponame);
         let mut transaction = transaction::Transaction::new();
 
-        //--------------------------------------------------------------------------
-        // 1. Abort if untracked files exist.
-        //--------------------------------------------------------------------------
+        // Generate a dry-run diff (without committing) to detect if any change is present.
+        let diff_output = self.create_diff(root, buffer, false, simplified);
+        if diff_output.trim().is_empty() {
+            info!("No changes detected in '{}'; skipping.", self.reponame);
+            return Ok(None);
+        }
+
+        // Proceed with transactional updates.
         if git::has_untracked_files(&repo_path)? {
             return Err(eyre!("Untracked files exist in '{}'. Aborting.", repo_path.display()));
         }
-
-        //--------------------------------------------------------------------------
-        // 2. If modified/staged files exist, stash them.
-        //--------------------------------------------------------------------------
         if git::has_modified_files(&repo_path)? {
             info!("Modified/staged files detected in '{}'; stashing changes.", repo_path.display());
             let stash_ref = git::stash_save(&repo_path)?;
@@ -195,59 +195,30 @@ impl Repo {
                 }
             });
         }
-
-        //--------------------------------------------------------------------------
-        // 3. Ensure we are on the HEAD branch (e.g. "main" or "master") and pull latest.
-        //--------------------------------------------------------------------------
-        let head_branch = git::get_head_branch(&repo_path)?; // e.g., "main"
+        let head_branch = git::get_head_branch(&repo_path)?;
         let original_branch = git::current_branch(&repo_path)?;
         if original_branch != head_branch {
-            info!(
-                "Switching from branch '{}' to HEAD branch '{}' in '{}'",
-                original_branch,
-                head_branch,
-                repo_path.display()
-            );
+            info!("Switching from branch '{}' to HEAD branch '{}' in '{}'", original_branch, head_branch, repo_path.display());
             git::checkout(&repo_path, &head_branch)?;
             transaction.add_rollback({
                 let repo_path = repo_path.clone();
                 let original_branch = original_branch.clone();
                 move || {
-                    info!(
-                        "Rolling back branch change: switching back to '{}'",
-                        original_branch
-                    );
+                    info!("Rolling back branch change: switching back to '{}'", original_branch);
                     git::checkout(&repo_path, &original_branch)
                 }
             });
         }
         info!("Pulling latest changes in '{}'", repo_path.display());
         git::pull(&repo_path)?;
-        // (Assume pull is idempotent; no rollback needed)
-
-        //--------------------------------------------------------------------------
-        // 4. Ensure desired branch (change_id) does not exist; if it does, delete it.
-        //--------------------------------------------------------------------------
         if git::branch_exists(&repo_path, &self.change_id)? {
-            info!(
-                "Local branch '{}' exists in '{}'; deleting it.",
-                self.change_id,
-                repo_path.display()
-            );
+            info!("Local branch '{}' exists in '{}'; deleting it.", self.change_id, repo_path.display());
             git::delete_local_branch(&repo_path, &self.change_id)?;
         }
         if git::remote_branch_exists(&repo_path, &self.change_id)? {
-            info!(
-                "Remote branch '{}' exists in '{}'; deleting it.",
-                self.change_id,
-                repo_path.display()
-            );
+            info!("Remote branch '{}' exists in '{}'; deleting it.", self.change_id, repo_path.display());
             git::delete_remote_branch(&repo_path, &self.change_id)?;
         }
-
-        //--------------------------------------------------------------------------
-        // 5. Check out (create) the desired branch.
-        //--------------------------------------------------------------------------
         let branch_origin = git::current_branch(&repo_path)?;
         info!("Checking out new branch '{}' in '{}'", self.change_id, repo_path.display());
         git::checkout_branch(&repo_path, &self.change_id)?;
@@ -259,15 +230,8 @@ impl Repo {
                 git::checkout(&repo_path, &branch_origin)
             }
         });
-
-        //--------------------------------------------------------------------------
-        // 6. Apply file modifications and generate a diff.
-        //    This step calls create_diff which applies the changes (delete/sub/regex)
-        //    and returns a diff. Since these changes are irreversible, register a rollback
-        //    that does "git reset --hard HEAD".
-        //--------------------------------------------------------------------------
         info!("Applying file modifications for change '{}' in '{}'", self.change_id, self.reponame);
-        let diff_output = self.create_diff(root, buffer, true, simplified);
+        let applied_diff = self.create_diff(root, buffer, true, simplified);
         transaction.add_rollback({
             let repo_path = repo_path.clone();
             move || {
@@ -275,20 +239,12 @@ impl Repo {
                 git::reset_hard(&repo_path)
             }
         });
-
-        //--------------------------------------------------------------------------
-        // 7. If no commit message is provided, the user only wants the diff.
-        //    In that case, roll back all changes (including file modifications) and return the diff.
-        //--------------------------------------------------------------------------
+        // If no commit message is provided, we treat it as a dry run.
         if commit_msg.is_none() {
             info!("Dry run detected for '{}'; rolling back all changes and returning diff.", self.reponame);
             transaction.rollback();
-            return Ok(diff_output);
+            return Ok(Some(applied_diff));
         }
-
-        //--------------------------------------------------------------------------
-        // 8. Stage and commit all changes in one command (using "git commit -am ...").
-        //--------------------------------------------------------------------------
         info!("Committing all changes in '{}' with message '{}'", self.reponame, commit_msg.unwrap());
         git::commit_all(&repo_path, commit_msg.unwrap())?;
         transaction.add_rollback({
@@ -298,10 +254,6 @@ impl Repo {
                 git::reset_commit(&repo_path)
             }
         });
-
-        //--------------------------------------------------------------------------
-        // 9. Push the branch to remote.
-        //--------------------------------------------------------------------------
         info!("Pushing branch '{}' for '{}' to remote", self.change_id, self.reponame);
         git::push_branch(&repo_path, &self.change_id)?;
         transaction.add_rollback({
@@ -312,30 +264,19 @@ impl Repo {
                 git::delete_remote_branch(&repo_path, &change_id)
             }
         });
-
-        //--------------------------------------------------------------------------
-        // 10. If a PR with the given change_id already exists, close it.
-        //--------------------------------------------------------------------------
         let existing_pr = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
         if existing_pr != 0 {
             info!("Existing PR #{} found for '{}'; closing it.", existing_pr, self.reponame);
             git::close_pr(&self.reponame, existing_pr)?;
-            // No rollback for this step.
         }
-
-        //--------------------------------------------------------------------------
-        // 11. Create a new PR for the branch against the HEAD branch.
-        //--------------------------------------------------------------------------
         info!("Creating a new PR for branch '{}' in '{}'", self.change_id, self.reponame);
         let pr_url = git::create_pr(&repo_path, &self.change_id, commit_msg.unwrap());
         if pr_url.is_none() {
             return Err(eyre!("Failed to create PR for repo '{}'", self.reponame));
         }
-
-        // All steps succeeded; commit the transaction.
         transaction.commit();
         info!("Repository '{}' processed successfully.", self.reponame);
-        Ok(diff_output)
+        Ok(Some(applied_diff))
     }
 
     pub fn review(&self, action: &cli::ReviewAction, summary: bool) -> Result<String> {

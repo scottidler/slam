@@ -90,14 +90,13 @@ fn process_create_command(
     buffer: usize,
     repo_ptns: Vec<String>,
 ) -> Result<()> {
-    std::env::remove_var("GITHUB_TOKEN");
+    env::remove_var("GITHUB_TOKEN");
 
     let total_emoji = "🔍";
     let repos_emoji = "📦";
     let files_emoji = "📄";
     let diffs_emoji = "📝";
 
-    // Match once on the optional action. If Some, call decompose to get (change, commit_msg, simplified).
     let (change, commit_msg, simplified) = match action {
         Some(action) => {
             let (change, commit_msg, simplified) = action.decompose();
@@ -110,16 +109,12 @@ fn process_create_command(
     let discovered_paths = git::find_git_repositories(&root)?;
     let mut discovered_repos = Vec::new();
 
-    // Create local repo entries using the extracted change (if any)
     for path in discovered_paths {
-        if let Some(repo) =
-            repo::Repo::create_repo_from_local(&path, &root, &change, &files, &change_id)
-        {
+        if let Some(repo) = repo::Repo::create_repo_from_local(&path, &root, &change, &files, &change_id) {
             discovered_repos.push(repo);
         }
     }
 
-    // Build a status accumulator as we go.
     let mut status = Vec::new();
     status.push(format!("{}{}", discovered_repos.len(), total_emoji));
 
@@ -134,14 +129,11 @@ fn process_create_command(
     if !repo_ptns.is_empty() {
         status.push(format!("{}{}", filtered_repos.len(), repos_emoji));
     }
-
-    // If file patterns were provided, filter out repos with no matched files.
     if !files.is_empty() {
         filtered_repos.retain(|repo| !repo.files.is_empty());
         status.push(format!("{}{}", filtered_repos.len(), files_emoji));
     }
-
-    // Dry-run: if no action (i.e. change is None), print repos and exit early.
+    // Dry-run: if no change is specified, list matched repositories and exit.
     if change.is_none() {
         if filtered_repos.is_empty() {
             println!("No repositories matched your criteria.");
@@ -161,16 +153,11 @@ fn process_create_command(
         return Ok(());
     }
 
-    // Process each repository (committing changes, creating diffs, etc.)
-    let outputs: Vec<String> = filtered_repos
-        .par_iter()
+    let outputs: Vec<Option<String>> = filtered_repos
+        .into_par_iter()
         .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), simplified))
-        .collect::<Result<Vec<String>>>()?;
-
-    let matches: Vec<String> = outputs
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .collect();
+        .collect::<eyre::Result<Vec<Option<String>>>>()?;
+    let matches: Vec<String> = outputs.into_iter().filter_map(|s| s).collect();
 
     if !matches.is_empty() {
         println!("{}", change_id);
@@ -179,7 +166,6 @@ fn process_create_command(
         }
         status.push(format!("{}{}", matches.len(), diffs_emoji));
     }
-
     status.reverse();
     println!("  {}", status.join(" | "));
 
