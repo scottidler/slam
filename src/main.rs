@@ -99,8 +99,8 @@ fn process_create_command(
 
     // Match once on the optional action. If Some, call into_parts to get (change, commit_msg, no_diff).
     let (change, commit_msg, no_diff) = match action {
-        Some(act) => {
-            let (change, commit_msg, no_diff) = act.decompose();
+        Some(action) => {
+            let (change, commit_msg, no_diff) = action.decompose();
             (Some(change), commit_msg, no_diff)
         }
         None => (None, None, false),
