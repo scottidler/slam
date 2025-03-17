@@ -83,7 +83,6 @@ pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
     Ok(repos)
 }
 
-
 pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     let output = Command::new("gh")
         .args([
@@ -263,7 +262,43 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
     if admin_override {
         args.insert(3, "--admin");
     }
-    Command::new("gh").args(&args).output()?;
+
+    // Execute the merge command.
+    let merge_output = Command::new("gh").args(&args).output()?;
+
+    // Even if the command returns a success code, its output may indicate that the merge was blocked.
+    let output_combined = format!("{}{}",
+        String::from_utf8_lossy(&merge_output.stdout),
+        String::from_utf8_lossy(&merge_output.stderr)
+    );
+    if output_combined.to_lowercase().contains("review required") {
+        return Err(eyre!("Merge blocked: review required (GitHub rules not satisfied)"));
+    }
+
+    // Re-check the PR status via gh pr view.
+    let verify_output = Command::new("gh")
+        .args(&[
+            "pr", "view",
+            &pr_binding,
+            "--repo", repo,
+            "--json", "state,mergedAt"
+        ])
+        .output()?;
+
+    if !verify_output.status.success() {
+        return Err(eyre!(
+            "Failed to verify PR status: {}",
+            String::from_utf8_lossy(&verify_output.stderr)
+        ));
+    }
+
+    // Parse the JSON output.
+    let json: serde_json::Value = serde_json::from_slice(&verify_output.stdout)?;
+    // Check that the state is MERGED or mergedAt is non-null.
+    if json["state"].as_str() != Some("MERGED") && json["mergedAt"].is_null() {
+        return Err(eyre!("PR merge not confirmed; merge blocked by review requirements"));
+    }
+
     Ok(())
 }
 
@@ -535,7 +570,6 @@ pub struct PrStatus {
 }
 
 pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
-    // Call gh to view the PR and request the needed fields.
     let output = Command::new("gh")
         .args(&[
             "pr", "view",
@@ -545,7 +579,6 @@ pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
         ])
         .output()
         .map_err(|e| eyre!("Failed to execute gh pr view: {}", e))?;
-    debug!("get_pr_status: output={:?}", output);
 
     if !output.status.success() {
         return Err(eyre!(
@@ -556,31 +589,38 @@ pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
         ));
     }
 
-    // Parse the output JSON.
     let json: Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| eyre!("Failed to parse PR JSON: {}", e))?;
 
-    // 'isDraft' maps directly.
+    // Log only a summary of the fields
+    debug!(
+        "PR {}#{}: isDraft: {:?}, mergeable: {:?}, reviewDecision: {:?}, checks: {:?}",
+        repo_name,
+        pr_number,
+        json["isDraft"].as_bool().unwrap_or(false),
+        json["mergeable"].as_str().unwrap_or("unknown"),
+        json["reviewDecision"].as_str().unwrap_or("unknown"),
+        json["statusCheckRollup"]
+    );
+
+    // Determine status based on key fields:
     let draft = json["isDraft"].as_bool().unwrap_or(false);
 
-    // For mergeable, if the value is "MERGEABLE", we treat it as true.
     let mergeable = match json["mergeable"].as_str() {
         Some(s) if s == "MERGEABLE" => true,
         _ => false,
     };
 
-    // For reviewed, if reviewDecision equals "APPROVED", then true.
     let reviewed = match json["reviewDecision"].as_str() {
         Some(s) if s == "APPROVED" => true,
         _ => false,
     };
 
-    // For checked: if there is a statusCheckRollup array, ensure every check's conclusion is "SUCCESS".
+    // Consider both "SUCCESS" and "SKIPPED" as acceptable outcomes.
     let checked = if let Some(arr) = json["statusCheckRollup"].as_array() {
         arr.iter().all(|check| {
-            check["conclusion"]
-                .as_str()
-                .unwrap_or("SUCCESS") == "SUCCESS"
+            let conclusion = check["conclusion"].as_str().unwrap_or("SUCCESS");
+            conclusion == "SUCCESS" || conclusion == "SKIPPED"
         })
     } else {
         true
@@ -937,4 +977,3 @@ pub fn _get_closed_pr_number_for_repo(repo: &str, change_id: &str) -> Result<u64
         .unwrap_or(0);
     Ok(pr_number)
 }
-
