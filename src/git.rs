@@ -254,7 +254,6 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
         "pr", "merge",
         &pr_binding,
         "--rebase",
-        "--squash",
         "--delete-branch",
         "--repo",
         repo,
@@ -263,8 +262,12 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
         args.insert(3, "--admin");
     }
 
+    debug!("merge_pr args ={:?}", args);
+
     // Execute the merge command.
     let merge_output = Command::new("gh").args(&args).output()?;
+
+    debug!("merge_output = {:?}", merge_output);
 
     // Even if the command returns a success code, its output may indicate that the merge was blocked.
     let output_combined = format!("{}{}",
