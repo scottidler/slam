@@ -316,7 +316,7 @@ impl Repo {
                 }
 
                 // Merge the PR.
-                match git::merge_pr(&self.reponame, self.pr_number, *admin_override) {
+                match git::merge_pr(&self.reponame, self.pr_number, true) {
                     Ok(()) => {
                         info!("Successfully merged PR {} for repo '{}'.", self.pr_number, self.reponame);
                     }
