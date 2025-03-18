@@ -253,7 +253,7 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
     let mut args = vec![
         "pr", "merge",
         &pr_binding,
-        "--rebase",
+        "--squash",
         "--delete-branch",
         "--repo",
         repo,
