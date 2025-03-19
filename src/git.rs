@@ -17,23 +17,77 @@ fn git(repo_path: &Path, args: &[&str]) -> Result<Output> {
         .map_err(|e| eyre!("Failed to execute git {:?}: {}", args, e))
 }
 
-pub fn find_git_repositories(root: &Path) -> Result<Vec<std::path::PathBuf>> {
-    let mut repos = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() && path.join(".git").is_dir() {
-            repos.push(path);
-        } else if path.is_dir() {
-            repos.extend(find_git_repositories(&path)?);
+pub fn clone_repo(reposlug: &str, target: &Path) -> Result<()> {
+    let url = format!("git@github.com:{}.git", reposlug);
+
+    let ssh_cmd_output = Command::new("git")
+        .args(&["config", "--get", "core.sshCommand"])
+        .output()?;
+    let ssh_command = if ssh_cmd_output.status.success() {
+        String::from_utf8_lossy(&ssh_cmd_output.stdout).trim().to_string()
+    } else {
+        "ssh".to_string()
+    };
+
+    // Use --quiet to suppress default git output
+    info!("Cloning {} into {} quietly", reposlug, target.display());
+    let status = Command::new("git")
+        .env("GIT_SSH_COMMAND", ssh_command)
+        .args(&["clone", "--quiet", &url, target.to_str().unwrap()])
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(eyre!("git clone failed for {} via {}", reposlug, url))
+    }
+}
+
+pub fn clone_or_update_repo(reposlug: &str, target: &Path, branch: &str) -> Result<()> {
+    let expected_url = format!("git@github.com:{}.git", reposlug);
+
+    if !target.exists() {
+        info!("Target {} does not exist; cloning {} quietly", target.display(), reposlug);
+        clone_repo(reposlug, target)?;
+    } else {
+        debug!("Target {} exists; verifying remote URL...", target.display());
+        let output = Command::new("git")
+            .current_dir(target)
+            .args(&["config", "--get", "remote.origin.url"])
+            .output()?;
+        let current_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if current_url != expected_url {
+            debug!("Remote URL mismatch for {}: expected {}, found {}. Updating remote URL...", reposlug, expected_url, current_url);
+            let set_output = Command::new("git")
+                .current_dir(target)
+                .args(&["remote", "set-url", "origin", &expected_url])
+                .output()?;
+            if !set_output.status.success() {
+                return Err(eyre!("Failed to update remote URL for {}: {}", reposlug, String::from_utf8_lossy(&set_output.stderr)));
+            }
+        } else {
+            debug!("Remote URL for {} is correct.", reposlug);
         }
     }
-    Ok(repos)
+
+    debug!("Fetching latest changes for {} quietly...", reposlug);
+    let fetch_status = Command::new("git")
+        .current_dir(target)
+        .args(&["fetch", "origin", "--quiet"])
+        .status()?;
+    if !fetch_status.success() {
+        return Err(eyre!("Failed to fetch remote for {}", reposlug));
+    }
+
+    debug!("Checking out branch '{}' in {} quietly...", branch, reposlug);
+    checkout_branch(target, branch)?;
+    Ok(())
 }
 
 pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["checkout", "-B", branch])
+        .args(&["checkout", "-B", branch, "--quiet"])
         .output()
         .map_err(|e| eyre!("Failed to execute git checkout: {}", e))?;
     if output.status.success() {
@@ -45,6 +99,19 @@ pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         ))
     }
+}
+
+pub fn find_git_repositories(root: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut repos = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() && path.join(".git").is_dir() {
+            repos.push(path);
+        } else if path.is_dir() {
+            repos.extend(find_git_repositories(&path)?);
+        }
+    }
+    Ok(repos)
 }
 
 pub fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {

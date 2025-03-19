@@ -3,7 +3,7 @@ use std::{
     fs,
     io,
     io::Write,
-    collections::HashMap,
+//    collections::HashMap,
 };
 
 use clap::{CommandFactory, FromArgMatches};
@@ -182,126 +182,102 @@ pub fn process_review_command(
     action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
 ) -> Result<()> {
-    // 1. Get all repos in the organization.
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
-    debug!("All repos:\n{}", all_reposlugs.iter().join("\n"));
+    debug!("All repository slugs: {:?}", all_reposlugs);
 
-    // 2. Filter repository slugs using glob-style matching.
-    let filtered_reposlugs = if reposlug_ptns.is_empty() || reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
-        all_reposlugs
+    let filtered_reposlugs: Vec<String> = if reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
+        all_reposlugs.clone()
     } else {
-        all_reposlugs
-            .into_iter()
-            .filter(|repo| {
-                reposlug_ptns.iter().any(|ptn| {
-                    if let Ok(pattern) = Pattern::new(ptn) {
-                        pattern.matches(repo)
-                    } else {
-                        false
-                    }
-                })
-            })
-            .collect::<Vec<_>>()
+        all_reposlugs.into_iter()
+            .filter(|repo| reposlug_ptns.iter().any(|ptn| {
+                if let Ok(pattern) = Pattern::new(ptn) {
+                    pattern.matches(repo)
+                } else {
+                    false
+                }
+            }))
+            .collect()
     };
-    info!(
-        "After user input filter, {} repos remain",
-        filtered_reposlugs.len()
-    );
-    debug!("Filtered repos:\n{}", filtered_reposlugs.iter().join("\n"));
+    info!("After filtering, {} repos remain", filtered_reposlugs.len());
+    debug!("Filtered repository slugs: {:?}", filtered_reposlugs);
 
-    // 3. Get the PR map (titles -> Vec of (reposlug, pr_number, author)).
     let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
-    debug!(
-        "PR map:\n{}",
-        pr_map
-            .iter()
-            .map(|(pr_name, vec)| {
-                let details = vec
-                    .iter()
-                    .map(|(repo, pr, author)| format!("{}:{} ({})", repo, pr, author))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} -> [{}]", pr_name, details)
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    debug!("Fetched PR map: {:?}", pr_map);
 
-    // 4. Build a filter to ensure we only handle PRs starting with "SLAM" and matching user input.
     let change_id_filter: Box<dyn Fn(&String) -> bool> = match action {
         cli::ReviewAction::Ls { change_id_ptns, .. } => {
-            Box::new(move |key: &String| {
-                if !key.starts_with("SLAM") {
-                    return false;
-                }
-                if change_id_ptns.is_empty() {
-                    true
-                } else {
-                    change_id_ptns.iter().any(|ptn| {
-                        if let Ok(glob_pat) = Pattern::new(ptn) {
-                            glob_pat.matches(key)
-                        } else {
-                            false
-                        }
-                    })
-                }
+            Box::new(move |key| {
+                key.starts_with("SLAM")
+                    && (change_id_ptns.is_empty()
+                        || change_id_ptns.iter().any(|ptn| {
+                            if let Ok(pattern) = Pattern::new(ptn) {
+                                pattern.matches(key)
+                            } else {
+                                false
+                            }
+                        }))
             })
         }
         cli::ReviewAction::Approve { change_id, .. }
-        | cli::ReviewAction::Delete { change_id, .. } => {
-            let change_id_owned = change_id.to_owned();
-            Box::new(move |key: &String| key.starts_with("SLAM") && key == &change_id_owned)
-        },
+        | cli::ReviewAction::Delete { change_id }
+        | cli::ReviewAction::Clone { change_id, .. } => {
+            let change_id_owned = change_id.clone();
+            Box::new(move |key| key.starts_with("SLAM") && key == &change_id_owned)
+        }
     };
 
-    // 5. Filter the PR map to only keep entries that match our filter.
-    let filtered_pr_map: HashMap<String, Vec<(String, u64, String)>> =
-        pr_map
-            .into_iter()
-            .filter(|(key, _)| change_id_filter(&key.to_string()))
-            .map(|(key, vec)| {
-                let key_owned = key.to_string();
-                let vec_owned = vec
-                    .into_iter()
-                    .map(|(repo, pr, author)| (repo.to_string(), pr, author.to_string()))
-                    .collect();
-                (key_owned, vec_owned)
-            })
-            .collect();
-
+    let mut filtered_pr_map: Vec<(String, Vec<(String, u64, String)>)> = pr_map
+        .into_iter()
+        .filter(|(key, _)| change_id_filter(key))
+        .collect();
     if filtered_pr_map.is_empty() {
-        warn!("No open PRs found matching change_id(s) starting with 'SLAM'.");
+        warn!("No open PRs found matching Change ID");
         return Ok(());
     }
+    filtered_pr_map.sort_by(|a, b| a.0.cmp(&b.0));
+    debug!("Filtered PR groups: {:?}", filtered_pr_map);
 
-    // 6. Determine if we are in "summary mode" (for listing only).
-    let summary = match action {
-        cli::ReviewAction::Ls { change_id_ptns, .. } => change_id_ptns.is_empty(),
-        _ => false,
-    };
-
-    // 7. Sort the groups by change_id for a stable output.
-    let mut groups: Vec<(String, Vec<(String, u64, String)>)> = filtered_pr_map.into_iter().collect();
-    groups.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // 8. Process each change_id group.
-    for (change_id, repo_infos) in groups {
+    for (change_id, repo_infos) in filtered_pr_map {
         let author = repo_infos
             .first()
-            .map(|(_, _, author)| author.clone())
+            .map(|(_, _, a)| a.clone())
             .unwrap_or_else(|| "unknown".to_string());
         println!("{} ({})", change_id, author);
 
-        // Process each repo in parallel; catch and log errors individually.
+        if let cli::ReviewAction::Clone { .. } = action {
+            let cwd = std::env::current_dir()?;
+            for (reposlug, _, _) in &repo_infos {
+                let target = cwd.join(reposlug);
+                match git::clone_or_update_repo(reposlug, &target, &change_id) {
+                    Ok(()) => {
+                        let rel_path = target.strip_prefix(&cwd).unwrap_or(&target);
+                        println!(
+                            "ensure clone {} -> {} and checkout to {}",
+                            reposlug,
+                            rel_path.display(),
+                            change_id
+                        );
+                    }
+                    Err(e) => {
+                        error!("Error with {}: {}", reposlug, e);
+                        println!("FAILED: {}", reposlug);
+                    }
+                }
+            }
+            println!();
+            return Ok(());
+        }
+
+        let summary = matches!(action, cli::ReviewAction::Ls { change_id_ptns, .. } if change_id_ptns.is_empty());
         let repo_outputs: Vec<String> = repo_infos
             .into_par_iter()
-            .map(|(reposlug, pr_number, _)| -> String {
+            .map(|(reposlug, pr_number, _)| {
                 let repo = repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
                 match repo.review(action, summary) {
                     Ok(msg) => utils::indent(&msg, 2),
                     Err(e) => {
-                        error!("Review failed for repo {}: {}", reposlug, e);
+                        error!("Review failed for {}: {}", reposlug, e);
                         utils::indent(&format!("Repo {} failed: {}", reposlug, e), 2)
                     }
                 }

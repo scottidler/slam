@@ -288,6 +288,7 @@ impl Repo {
                     Ok(self.get_review_diff(*buffer))
                 }
             }
+            cli::ReviewAction::Clone { .. } => Ok(String::new()),
             cli::ReviewAction::Approve { .. } => {
                 // Retrieve the PR status using our simplified PrStatus struct.
                 let status = git::get_pr_status(&self.reponame, self.pr_number)?;

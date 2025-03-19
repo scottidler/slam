@@ -242,9 +242,7 @@ impl CreateAction {
 
 #[derive(Subcommand, Debug)]
 pub enum ReviewAction {
-    #[command(
-        about = "List Change IDs matching the given pattern"
-    )]
+    #[command(about = "List Change IDs matching the given pattern")]
     Ls {
         #[arg(
             value_name = "CHANGE_ID_PTNS",
@@ -262,9 +260,22 @@ pub enum ReviewAction {
         )]
         buffer: usize,
     },
-    #[command(
-        about = "Approve a specific PR & merge it per matched repos, identified by its Change ID"
-    )]
+    #[command(about = "Clone all repos that have an open PR for the given Change ID")]
+    Clone {
+        #[arg(
+            value_name = "CHANGE_ID",
+            help = "Change ID used to find the PR (exact match required)"
+        )]
+        change_id: String,
+
+        #[arg(
+            short,
+            long,
+            help = "Pass `--all` to clone all repos, even with closed PRs"
+        )]
+        all: bool,
+    },
+    #[command(about = "Approve a specific PR & merge it per matched repos, identified by its Change ID")]
     Approve {
         #[arg(
             value_name = "CHANGE_ID",
@@ -278,9 +289,7 @@ pub enum ReviewAction {
         )]
         admin_override: bool,
     },
-    #[command(
-        about = "Delete a PR & branches per matched repos, identified by its Change ID"
-    )]
+    #[command(about = "Delete a PR & branches per matched repos, identified by its Change ID")]
     Delete {
         #[arg(
             value_name = "CHANGE_ID",
