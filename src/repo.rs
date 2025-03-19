@@ -288,35 +288,38 @@ impl Repo {
                     Ok(self.get_review_diff(*buffer))
                 }
             }
-            cli::ReviewAction::Clone { .. } => Ok(String::new()),
+            cli::ReviewAction::Clone { .. } => {
+                // Determine the target folder relative to the current working directory.
+                let cwd = std::env::current_dir()?;
+                let target = cwd.join(&self.reponame);
+                // Use the idempotent clone/update function and check out the change_id branch.
+                git::clone_or_update_repo(&self.reponame, &target, &self.change_id)?;
+                // Compute the relative path for reporting.
+                let rel_path = target.strip_prefix(&cwd).unwrap_or(&target);
+                Ok(format!(
+                    "ensure clone {} -> {} and checkout to {}",
+                    self.reponame,
+                    rel_path.display(),
+                    self.change_id
+                ))
+            }
             cli::ReviewAction::Approve { .. } => {
-                // Retrieve the PR status using our simplified PrStatus struct.
                 let status = git::get_pr_status(&self.reponame, self.pr_number)?;
-
-                // Check that the PR is not a draft.
                 if status.draft {
                     return Err(eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reponame));
                 }
-
-                // Ensure that the PR is mergeable (i.e. properly rebased on HEAD).
                 if !status.mergeable {
                     return Err(eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reponame));
                 }
-
-                // Check that all status checks have passed.
                 if !status.checked {
                     return Err(eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reponame));
                 }
-
-                // Approve the PR if it hasn't already been reviewed.
                 if status.reviewed {
                     warn!("PR {} is already reviewed; skipping re-approval.", self.pr_number);
                 } else {
                     git::approve_pr(&self.reponame, self.pr_number)?;
                     info!("PR {} approved for repo '{}'.", self.pr_number, self.reponame);
                 }
-
-                // Merge the PR.
                 match git::merge_pr(&self.reponame, self.pr_number, true) {
                     Ok(()) => {
                         info!("Successfully merged PR {} for repo '{}'.", self.pr_number, self.reponame);
@@ -331,10 +334,9 @@ impl Repo {
                         }
                     }
                 }
-
                 Ok(format!("Repo: {} -> Approved and merged PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
             }
-            cli::ReviewAction::Delete { change_id: _ } => {
+            cli::ReviewAction::Delete { .. } => {
                 let mut messages = Vec::new();
                 if self.pr_number != 0 {
                     git::close_pr(&self.reponame, self.pr_number)?;

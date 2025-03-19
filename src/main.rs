@@ -3,7 +3,6 @@ use std::{
     fs,
     io,
     io::Write,
-//    collections::HashMap,
 };
 
 use clap::{CommandFactory, FromArgMatches};
@@ -189,14 +188,17 @@ pub fn process_review_command(
     let filtered_reposlugs: Vec<String> = if reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
         all_reposlugs.clone()
     } else {
-        all_reposlugs.into_iter()
-            .filter(|repo| reposlug_ptns.iter().any(|ptn| {
-                if let Ok(pattern) = Pattern::new(ptn) {
-                    pattern.matches(repo)
-                } else {
-                    false
-                }
-            }))
+        all_reposlugs
+            .into_iter()
+            .filter(|repo| {
+                reposlug_ptns.iter().any(|ptn| {
+                    if let Ok(pattern) = Pattern::new(ptn) {
+                        pattern.matches(repo)
+                    } else {
+                        false
+                    }
+                })
+            })
             .collect()
     };
     info!("After filtering, {} repos remain", filtered_reposlugs.len());
@@ -206,19 +208,17 @@ pub fn process_review_command(
     debug!("Fetched PR map: {:?}", pr_map);
 
     let change_id_filter: Box<dyn Fn(&String) -> bool> = match action {
-        cli::ReviewAction::Ls { change_id_ptns, .. } => {
-            Box::new(move |key| {
-                key.starts_with("SLAM")
-                    && (change_id_ptns.is_empty()
-                        || change_id_ptns.iter().any(|ptn| {
-                            if let Ok(pattern) = Pattern::new(ptn) {
-                                pattern.matches(key)
-                            } else {
-                                false
-                            }
-                        }))
-            })
-        }
+        cli::ReviewAction::Ls { change_id_ptns, .. } => Box::new(move |key| {
+            key.starts_with("SLAM")
+                && (change_id_ptns.is_empty()
+                    || change_id_ptns.iter().any(|ptn| {
+                        if let Ok(pattern) = Pattern::new(ptn) {
+                            pattern.matches(key)
+                        } else {
+                            false
+                        }
+                    }))
+        }),
         cli::ReviewAction::Approve { change_id, .. }
         | cli::ReviewAction::Delete { change_id }
         | cli::ReviewAction::Clone { change_id, .. } => {
@@ -245,40 +245,17 @@ pub fn process_review_command(
             .unwrap_or_else(|| "unknown".to_string());
         println!("{} ({})", change_id, author);
 
-        if let cli::ReviewAction::Clone { .. } = action {
-            let cwd = std::env::current_dir()?;
-            for (reposlug, _, _) in &repo_infos {
-                let target = cwd.join(reposlug);
-                match git::clone_or_update_repo(reposlug, &target, &change_id) {
-                    Ok(()) => {
-                        let rel_path = target.strip_prefix(&cwd).unwrap_or(&target);
-                        println!(
-                            "ensure clone {} -> {} and checkout to {}",
-                            reposlug,
-                            rel_path.display(),
-                            change_id
-                        );
-                    }
-                    Err(e) => {
-                        error!("Error with {}: {}", reposlug, e);
-                        println!("FAILED: {}", reposlug);
-                    }
-                }
-            }
-            println!();
-            return Ok(());
-        }
-
-        let summary = matches!(action, cli::ReviewAction::Ls { change_id_ptns, .. } if change_id_ptns.is_empty());
+        // For each repository in this PR group, delegate to the repo review method.
+        // For Clone actions, Repo::review will handle the clone/update and checkout.
         let repo_outputs: Vec<String> = repo_infos
             .into_par_iter()
             .map(|(reposlug, pr_number, _)| {
                 let repo = repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
-                match repo.review(action, summary) {
-                    Ok(msg) => utils::indent(&msg, 2),
+                match repo.review(action, matches!(action, cli::ReviewAction::Ls { change_id_ptns, .. } if change_id_ptns.is_empty())) {
+                    Ok(msg) => msg,
                     Err(e) => {
                         error!("Review failed for {}: {}", reposlug, e);
-                        utils::indent(&format!("Repo {} failed: {}", reposlug, e), 2)
+                        format!("Repo {} failed: {}", reposlug, e)
                     }
                 }
             })
