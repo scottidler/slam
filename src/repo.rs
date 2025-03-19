@@ -122,7 +122,7 @@ impl Repo {
                             if simplified {
                                 file_diff.push_str(&format!(
                                     "{}\n",
-                                    utils::indent(&format!("Matched file: {}", file), 2)
+                                    utils::indent(&format!(">< {}", file), 2)
                                 ));
                             } else {
                                 file_diff.push_str(&format!(
@@ -143,7 +143,7 @@ impl Repo {
             for file in &self.files {
                 file_diffs.push_str(&format!(
                     "{}\n",
-                    utils::indent(&format!("Matched file: {}", file), 2)
+                    utils::indent(&format!(">< {}", file), 2)
                 ));
             }
         }
