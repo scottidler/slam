@@ -9,6 +9,7 @@ use clap::{CommandFactory, FromArgMatches};
 use eyre::Result;
 use glob::Pattern;
 use itertools::Itertools;
+use colored::Colorize;
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
 
@@ -76,9 +77,42 @@ fn main() -> Result<()> {
         cli::SlamCommand::Review { org, repo_ptns, action } => {
             process_review_command(org, &action, repo_ptns)?;
         }
+        cli::SlamCommand::Sandbox { action } => {
+            process_sandbox_command(action)?;
+        }
     }
 
     info!("SLAM execution complete.");
+    Ok(())
+}
+
+fn process_sandbox_command(action: cli::SandboxAction) -> eyre::Result<()> {
+    match action {
+        cli::SandboxAction::Setup {} => {
+            println!("Sandbox setup stub - not implemented yet.");
+        }
+        cli::SandboxAction::Refresh {} => {
+            let root = std::env::current_dir()?;
+            let repos = git::find_git_repositories(&root)?;
+            repos.par_iter().try_for_each(|repo| -> eyre::Result<()> {
+                // Ask the remote what the HEAD branch is.
+                let branch = git::get_head_branch(repo)?;
+                // Colorize the branch in magenta.
+                let branch_display = branch.magenta();
+                // Extract the reposlug (final directory name); fall back to full path if unavailable.
+                let reposlug = repo
+                    .file_name()
+                    .map(|os_str| os_str.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.display().to_string());
+                // Right-justify the branch (using a width of 6 characters) and print the reposlug.
+                println!("{:>6} {}", branch_display, reposlug);
+                git::reset_hard(repo)?;
+                git::checkout(repo, &branch)?;
+                git::pull(repo)?;
+                Ok(())
+            })?;
+        }
+    }
     Ok(())
 }
 

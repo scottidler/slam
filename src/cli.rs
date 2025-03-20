@@ -140,6 +140,12 @@ pub enum SlamCommand {
         #[command(subcommand)]
         action: ReviewAction,
     },
+
+    /// Sandbox commands for local repo experimentation
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -297,4 +303,12 @@ pub enum ReviewAction {
         )]
         change_id: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SandboxAction {
+    /// Set up sandbox environment (stub)
+    Setup {},
+    /// Refresh sandbox by resetting and pulling repositories
+    Refresh {},
 }
