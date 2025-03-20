@@ -77,7 +77,7 @@ pub struct SlamCli {
 
 #[derive(Subcommand, Debug)]
 pub enum SlamCommand {
-    /// Sandbox commands for local repo experimentation
+    /// Sandbox commands for local repo donkey
     Sandbox {
         #[arg(
             short = 'r',
@@ -89,10 +89,7 @@ pub enum SlamCommand {
         action: SandboxAction,
     },
 
-    #[command(
-        alias = "alleyoop",
-        about = "Create new PR branches with file updates. If no subcommand is provided, a dry run will print the list of matched repositories (filtered via -r) and, if -f is supplied, the matching files beneath them."
-    )]
+    /// Create new <change-id> (branches/PRs) with updates
     Create {
         #[arg(
             short = 'f',
@@ -129,9 +126,7 @@ pub enum SlamCommand {
         action: Option<CreateAction>,
     },
 
-    #[command(
-        about = "Review PRs and merge them"
-    )]
+    /// Review <change-id> (PRs per repo) and merge them
     Review {
         #[arg(
             short = 'o',
