@@ -308,7 +308,7 @@ pub enum ReviewAction {
 
 #[derive(Subcommand, Debug)]
 pub enum SandboxAction {
-    /// Set up sandbox environment (stub)
+    /// Set up sandbox environment
     Setup {},
     /// Refresh sandbox by resetting and pulling repositories
     Refresh {},
