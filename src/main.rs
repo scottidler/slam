@@ -68,6 +68,7 @@ fn main() -> Result<()> {
     let mut cmd = cli::SlamCli::command();
     cmd = cmd.after_help(cli::get_cli_tool_status());
     let cli = cli::SlamCli::from_arg_matches(&cmd.get_matches())?;
+    info!("{}", "-".repeat(100));
     info!("Starting SLAM");
 
     match cli.command {
@@ -77,8 +78,8 @@ fn main() -> Result<()> {
         cli::SlamCommand::Review { org, repo_ptns, action } => {
             process_review_command(org, &action, repo_ptns)?;
         }
-        cli::SlamCommand::Sandbox { action } => {
-            process_sandbox_command(action)?;
+        cli::SlamCommand::Sandbox { repo_ptns, action } => {
+            process_sandbox_command(repo_ptns, action)?;
         }
     }
 
@@ -86,25 +87,50 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn process_sandbox_command(action: cli::SandboxAction) -> eyre::Result<()> {
+fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> Result<()> {
     match action {
         cli::SandboxAction::Setup {} => {
-            println!("Sandbox setup stub - not implemented yet.");
+            // Default organization—adjust as needed.
+            let org = "tatari-tv";
+            // Query GitHub for the list of non-archived repos in the org.
+            let repos = git::find_repos_in_org(org)?;
+            info!("Found {} repos in '{}'", repos.len(), org);
+
+            // Filter by repo patterns using substring matching
+            let filtered_repos: Vec<String> = if repo_ptns.is_empty() {
+                repos.clone()
+            } else {
+                repos.into_iter().filter(|r| {
+                    repo_ptns.iter().any(|ptn| r.contains(ptn))
+                }).collect()
+            };
+
+            info!("After filtering, {} repos remain", filtered_repos.len());
+
+            // For each filtered repo, clone it into the current working directory.
+            let cwd = std::env::current_dir()?;
+            for reposlug in filtered_repos {
+                let target = cwd.join(&reposlug); // This will preserve "tatari-tv/somerepo"
+                if target.exists() {
+                    info!("Repository {} already exists in {}; updating...", reposlug, target.display());
+                    git::pull(&target)?;
+                } else {
+                    info!("Cloning repository {} into {}", reposlug, target.display());
+                    git::clone_repo(&reposlug, &target)?;
+                }
+            }
+            return Ok(());
         }
         cli::SandboxAction::Refresh {} => {
             let root = std::env::current_dir()?;
             let repos = git::find_git_repositories(&root)?;
-            repos.par_iter().try_for_each(|repo| -> eyre::Result<()> {
-                // Ask the remote what the HEAD branch is.
+            repos.par_iter().try_for_each(|repo| -> Result<()> {
                 let branch = git::get_head_branch(repo)?;
-                // Colorize the branch in magenta.
                 let branch_display = branch.magenta();
-                // Extract the reposlug (final directory name); fall back to full path if unavailable.
                 let reposlug = repo
                     .file_name()
                     .map(|os_str| os_str.to_string_lossy().to_string())
                     .unwrap_or_else(|| repo.display().to_string());
-                // Right-justify the branch (using a width of 6 characters) and print the reposlug.
                 println!("{:>6} {}", branch_display, reposlug);
                 git::reset_hard(repo)?;
                 git::checkout(repo, &branch)?;
@@ -188,7 +214,7 @@ fn process_create_command(
     let outputs: Vec<Option<String>> = filtered_repos
         .into_par_iter()
         .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), simplified))
-        .collect::<eyre::Result<Vec<Option<String>>>>()?;
+        .collect::<Result<Vec<Option<String>>>>()?;
     let matches: Vec<String> = outputs.into_iter().filter_map(|s| s).collect();
 
     if !matches.is_empty() {

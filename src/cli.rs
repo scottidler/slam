@@ -77,6 +77,18 @@ pub struct SlamCli {
 
 #[derive(Subcommand, Debug)]
 pub enum SlamCommand {
+    /// Sandbox commands for local repo experimentation
+    Sandbox {
+        #[arg(
+            short = 'r',
+            long,
+            help = "Patterns for repo filtering"
+        )]
+        repo_ptns: Vec<String>,
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
+
     #[command(
         alias = "alleyoop",
         about = "Create new PR branches with file updates. If no subcommand is provided, a dry run will print the list of matched repositories (filtered via -r) and, if -f is supplied, the matching files beneath them."
@@ -139,12 +151,6 @@ pub enum SlamCommand {
 
         #[command(subcommand)]
         action: ReviewAction,
-    },
-
-    /// Sandbox commands for local repo experimentation
-    Sandbox {
-        #[command(subcommand)]
-        action: SandboxAction,
     },
 }
 
