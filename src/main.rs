@@ -183,7 +183,6 @@ pub fn process_review_command(
 ) -> Result<()> {
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
-    debug!("All repository slugs: {:?}", all_reposlugs);
 
     let filtered_reposlugs: Vec<String> = if reposlug_ptns.iter().all(|s| s.trim().is_empty()) {
         all_reposlugs.clone()
