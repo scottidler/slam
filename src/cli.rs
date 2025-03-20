@@ -77,7 +77,7 @@ pub struct SlamCli {
 
 #[derive(Subcommand, Debug)]
 pub enum SlamCommand {
-    /// Sandbox commands for local repo donkey
+    /// Sandbox commands for local workspace with every repo checked out
     Sandbox {
         #[arg(
             short = 'r',
