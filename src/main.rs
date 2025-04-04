@@ -179,9 +179,9 @@ fn process_create_command(
     let mut filtered_repos: Vec<_> = discovered_repos
         .into_iter()
         .filter(|repo| {
-            repo_ptns.is_empty() || repo_ptns.iter().any(|spec| repo.reponame.contains(spec))
+            repo_ptns.is_empty() || repo_ptns.iter().any(|spec| repo.reposlug.contains(spec))
         })
-        .sorted_by(|a, b| a.reponame.cmp(&b.reponame))
+        .sorted_by(|a, b| a.reposlug.cmp(&b.reposlug))
         .collect();
 
     if !repo_ptns.is_empty() {
@@ -198,7 +198,7 @@ fn process_create_command(
         } else {
             println!("Matched repositories:");
             for repo in &filtered_repos {
-                println!("  {}", repo.reponame);
+                println!("  {}", repo.reposlug);
                 if !files.is_empty() {
                     for file in &repo.files {
                         println!("    {}", file);

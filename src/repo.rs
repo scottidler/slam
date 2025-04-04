@@ -18,7 +18,7 @@ pub enum Change {
 
 #[derive(Debug, Clone)]
 pub struct Repo {
-    pub reponame: String,
+    pub reposlug: String,
     pub change_id: String,
     pub change: Option<Change>,
     pub files: Vec<String>,
@@ -35,7 +35,7 @@ impl Repo {
     ) -> Option<Self> {
         debug!("Creating repo entry for '{}'", repo.display());
 
-        let relative_repo = match repo.strip_prefix(root) {
+        let relative_reposlug = match repo.strip_prefix(root) {
             Ok(path) => path.display().to_string(),
             Err(e) => {
                 warn!("Failed to strip prefix for '{}': {}", repo.display(), e);
@@ -63,7 +63,7 @@ impl Repo {
         }
 
         Some(Self {
-            reponame: relative_repo,
+            reposlug: relative_reposlug,
             change_id: change_id.to_string(),
             change: change.clone(),
             files,
@@ -71,9 +71,9 @@ impl Repo {
         })
     }
 
-    pub fn create_repo_from_remote_with_pr(repo_name: &str, change_id: &str, pr_number: u64) -> Self {
+    pub fn create_repo_from_remote_with_pr(reposlug: &str, change_id: &str, pr_number: u64) -> Self {
         Self {
-            reponame: repo_name.to_owned(),
+            reposlug: reposlug.to_owned(),
             change_id: change_id.to_owned(),
             change: None,
             files: Vec::new(),
@@ -82,7 +82,7 @@ impl Repo {
     }
 
     pub fn create_diff(&self, root: &Path, buffer: usize, commit: bool, simplified: bool) -> String {
-        let repo_path = root.join(&self.reponame);
+        let repo_path = root.join(&self.reposlug);
         let mut file_diffs = String::new();
 
         if let Some(change) = self.change.as_ref() {
@@ -151,7 +151,7 @@ impl Repo {
         if file_diffs.trim().is_empty() {
             "".to_string()
         } else {
-            format!("{}\n{}", self.reponame, file_diffs)
+            format!("{}\n{}", self.reposlug, file_diffs)
         }
     }
 
@@ -169,13 +169,13 @@ impl Repo {
         commit_msg: Option<&str>,
         simplified: bool,
     ) -> Result<Option<String>> {
-        let repo_path = root.join(&self.reponame);
+        let repo_path = root.join(&self.reposlug);
         let mut transaction = transaction::Transaction::new();
 
         // Generate a dry-run diff (without committing) to detect if any change is present.
         let diff_output = self.create_diff(root, buffer, false, simplified);
         if diff_output.trim().is_empty() {
-            info!("No changes detected in '{}'; skipping.", self.reponame);
+            info!("No changes detected in '{}'; skipping.", self.reposlug);
             return Ok(None);
         }
 
@@ -230,7 +230,7 @@ impl Repo {
                 git::checkout(&repo_path, &branch_origin)
             }
         });
-        info!("Applying file modifications for change '{}' in '{}'", self.change_id, self.reponame);
+        info!("Applying file modifications for change '{}' in '{}'", self.change_id, self.reposlug);
         let applied_diff = self.create_diff(root, buffer, true, simplified);
         transaction.add_rollback({
             let repo_path = repo_path.clone();
@@ -241,11 +241,11 @@ impl Repo {
         });
         // If no commit message is provided, we treat it as a dry run.
         if commit_msg.is_none() {
-            info!("Dry run detected for '{}'; rolling back all changes and returning diff.", self.reponame);
+            info!("Dry run detected for '{}'; rolling back all changes and returning diff.", self.reposlug);
             transaction.rollback();
             return Ok(Some(applied_diff));
         }
-        info!("Committing all changes in '{}' with message '{}'", self.reponame, commit_msg.unwrap());
+        info!("Committing all changes in '{}' with message '{}'", self.reposlug, commit_msg.unwrap());
         git::commit_all(&repo_path, commit_msg.unwrap())?;
         transaction.add_rollback({
             let repo_path = repo_path.clone();
@@ -254,7 +254,7 @@ impl Repo {
                 git::reset_commit(&repo_path)
             }
         });
-        info!("Pushing branch '{}' for '{}' to remote", self.change_id, self.reponame);
+        info!("Pushing branch '{}' for '{}' to remote", self.change_id, self.reposlug);
         git::push_branch(&repo_path, &self.change_id)?;
         transaction.add_rollback({
             let repo_path = repo_path.clone();
@@ -264,18 +264,18 @@ impl Repo {
                 git::delete_remote_branch(&repo_path, &change_id)
             }
         });
-        let existing_pr = git::get_pr_number_for_repo(&self.reponame, &self.change_id)?;
+        let existing_pr = git::get_pr_number_for_repo(&self.reposlug, &self.change_id)?;
         if existing_pr != 0 {
-            info!("Existing PR #{} found for '{}'; closing it.", existing_pr, self.reponame);
-            git::close_pr(&self.reponame, existing_pr)?;
+            info!("Existing PR #{} found for '{}'; closing it.", existing_pr, self.reposlug);
+            git::close_pr(&self.reposlug, existing_pr)?;
         }
-        info!("Creating a new PR for branch '{}' in '{}'", self.change_id, self.reponame);
+        info!("Creating a new PR for branch '{}' in '{}'", self.change_id, self.reposlug);
         let pr_url = git::create_pr(&repo_path, &self.change_id, commit_msg.unwrap());
         if pr_url.is_none() {
-            return Err(eyre!("Failed to create PR for repo '{}'", self.reponame));
+            return Err(eyre!("Failed to create PR for repo '{}'", self.reposlug));
         }
         transaction.commit();
-        info!("Repository '{}' processed successfully.", self.reponame);
+        info!("Repository '{}' processed successfully.", self.reposlug);
         Ok(Some(applied_diff))
     }
 
@@ -283,7 +283,7 @@ impl Repo {
         match action {
             cli::ReviewAction::Ls { buffer, .. } => {
                 if summary {
-                    Ok(format!("{} (# {})", self.reponame, self.pr_number))
+                    Ok(format!("{} (# {})", self.reposlug, self.pr_number))
                 } else {
                     Ok(self.get_review_diff(*buffer))
                 }
@@ -291,61 +291,61 @@ impl Repo {
             cli::ReviewAction::Clone { .. } => {
                 // Determine the target folder relative to the current working directory.
                 let cwd = std::env::current_dir()?;
-                let target = cwd.join(&self.reponame);
+                let target = cwd.join(&self.reposlug);
                 // Use the idempotent clone/update function and check out the change_id branch.
-                git::clone_or_update_repo(&self.reponame, &target, &self.change_id)?;
+                git::clone_or_update_repo(&self.reposlug, &target, &self.change_id)?;
                 // Compute the relative path for reporting.
                 let rel_path = target.strip_prefix(&cwd).unwrap_or(&target);
                 Ok(format!(
                     "ensure clone {} -> {} and checkout to {}",
-                    self.reponame,
+                    self.reposlug,
                     rel_path.display(),
                     self.change_id
                 ))
             }
             cli::ReviewAction::Approve { .. } => {
-                let status = git::get_pr_status(&self.reponame, self.pr_number)?;
+                let status = git::get_pr_status(&self.reposlug, self.pr_number)?;
                 if status.draft {
-                    return Err(eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reponame));
+                    return Err(eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reposlug));
                 }
                 if !status.mergeable {
-                    return Err(eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reponame));
+                    return Err(eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reposlug));
                 }
                 if !status.checked {
-                    return Err(eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reponame));
+                    return Err(eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reposlug));
                 }
                 if status.reviewed {
                     warn!("PR {} is already reviewed; skipping re-approval.", self.pr_number);
                 } else {
-                    git::approve_pr(&self.reponame, self.pr_number)?;
-                    info!("PR {} approved for repo '{}'.", self.pr_number, self.reponame);
+                    git::approve_pr(&self.reposlug, self.pr_number)?;
+                    info!("PR {} approved for repo '{}'.", self.pr_number, self.reposlug);
                 }
-                match git::merge_pr(&self.reponame, self.pr_number, true) {
+                match git::merge_pr(&self.reposlug, self.pr_number, true) {
                     Ok(()) => {
-                        info!("Successfully merged PR {} for repo '{}'.", self.pr_number, self.reponame);
+                        info!("Successfully merged PR {} for repo '{}'.", self.pr_number, self.reposlug);
                     }
                     Err(merge_err) => {
                         if merge_err.to_string().contains("Merge conflict") {
-                            warn!("Merge conflict detected for repo {}. A rebase is required.", self.reponame);
+                            warn!("Merge conflict detected for repo {}. A rebase is required.", self.reposlug);
                             return Err(merge_err);
                         } else {
-                            error!("Merge failed for repo {}: {}", self.reponame, merge_err);
+                            error!("Merge failed for repo {}: {}", self.reposlug, merge_err);
                             return Err(merge_err);
                         }
                     }
                 }
-                Ok(format!("Repo: {} -> Approved and merged PR: {} (# {})", self.reponame, self.change_id, self.pr_number))
+                Ok(format!("Repo: {} -> Approved and merged PR: {} (# {})", self.reposlug, self.change_id, self.pr_number))
             }
             cli::ReviewAction::Delete { .. } => {
                 let mut messages = Vec::new();
                 if self.pr_number != 0 {
-                    git::close_pr(&self.reponame, self.pr_number)?;
-                    messages.push(format!("Closed PR #{} for repo '{}'", self.pr_number, self.reponame));
+                    git::close_pr(&self.reposlug, self.pr_number)?;
+                    messages.push(format!("Closed PR #{} for repo '{}'", self.pr_number, self.reposlug));
                 } else {
-                    messages.push(format!("No open PR found for repo '{}'", self.reponame));
+                    messages.push(format!("No open PR found for repo '{}'", self.reposlug));
                 }
-                git::delete_remote_branch_gh(&self.reponame, &self.change_id)?;
-                messages.push(format!("Deleted remote branch '{}' for repo '{}'", self.change_id, self.reponame));
+                git::delete_remote_branch_gh(&self.reposlug, &self.change_id)?;
+                messages.push(format!("Deleted remote branch '{}' for repo '{}'", self.change_id, self.reposlug));
                 Ok(messages.join("\n"))
             }
         }
@@ -353,8 +353,8 @@ impl Repo {
 
     pub fn get_review_diff(&self, buffer: usize) -> String {
         let mut output = String::new();
-        output.push_str(&format!("{} (# {})\n", self.reponame, self.pr_number));
-        match git::get_pr_diff(&self.reponame, self.pr_number) {
+        output.push_str(&format!("{} (# {})\n", self.reposlug, self.pr_number));
+        match git::get_pr_diff(&self.reposlug, self.pr_number) {
             Ok(diff_text) => {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
                 for (filename, orig_text, upd_text) in &file_patches {
