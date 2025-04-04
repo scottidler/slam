@@ -1,3 +1,5 @@
+// src/main.rs
+
 use std::{
     env,
     fs,
@@ -23,6 +25,69 @@ mod git;
 mod repo;
 mod utils;
 mod transaction;
+
+/// Extracts the repository name (the part after '/') from a reposlug.
+/// If the reposlug is not in the expected format, returns the full string.
+fn extract_reponame(reposlug: &str) -> &str {
+    reposlug.split('/').nth(1).unwrap_or(reposlug)
+}
+
+/// Filters the given vector of repositories according to a list of filtering specifications.
+/// The filter criteria are applied in the following order:
+/// 1. Exact match on the repository name (the part after '/')
+/// 2. Starts-with match on the repository name
+/// 3. Exact match on the full reposlug ("org/reponame")
+/// 4. Starts-with match on the full reposlug
+///
+/// At the first level where one or more repositories match, those matches are used.
+/// Finally, the resulting list is sorted by reposlug using itertools.
+fn filter_repos_by_spec(repos: Vec<repo::Repo>, specs: &[String]) -> Vec<repo::Repo> {
+    let filtered: Vec<repo::Repo> = if specs.is_empty() {
+        repos
+    } else {
+        // Level 1: Exact match on repository name.
+        let level1: Vec<repo::Repo> = repos
+            .iter()
+            .filter(|r| specs.iter().any(|spec| extract_reponame(&r.reposlug) == spec))
+            .cloned()
+            .collect();
+        if !level1.is_empty() {
+            level1
+        } else {
+            // Level 2: Starts-with match on repository name.
+            let level2: Vec<repo::Repo> = repos
+                .iter()
+                .filter(|r| specs.iter().any(|spec| extract_reponame(&r.reposlug).starts_with(spec)))
+                .cloned()
+                .collect();
+            if !level2.is_empty() {
+                level2
+            } else {
+                // Level 3: Exact match on full reposlug.
+                let level3: Vec<repo::Repo> = repos
+                    .iter()
+                    .filter(|r| specs.iter().any(|spec| r.reposlug == *spec))
+                    .cloned()
+                    .collect();
+                if !level3.is_empty() {
+                    level3
+                } else {
+                    // Level 4: Starts-with match on full reposlug.
+                    repos
+                        .iter()
+                        .filter(|r| specs.iter().any(|spec| r.reposlug.starts_with(spec)))
+                        .cloned()
+                        .collect()
+                }
+            }
+        }
+    };
+
+    filtered
+        .into_iter()
+        .sorted_by(|a, b| a.reposlug.cmp(&b.reposlug))
+        .collect()
+}
 
 fn main() -> Result<()> {
     if env::var("RUST_LOG").is_err() {
@@ -176,13 +241,8 @@ fn process_create_command(
     let mut status = Vec::new();
     status.push(format!("{}{}", discovered_repos.len(), total_emoji));
 
-    let mut filtered_repos: Vec<_> = discovered_repos
-        .into_iter()
-        .filter(|repo| {
-            repo_ptns.is_empty() || repo_ptns.iter().any(|spec| repo.reposlug.contains(spec))
-        })
-        .sorted_by(|a, b| a.reposlug.cmp(&b.reposlug))
-        .collect();
+    // Use the new filtering function instead of the inline lambda.
+    let mut filtered_repos = filter_repos_by_spec(discovered_repos, &repo_ptns);
 
     if !repo_ptns.is_empty() {
         status.push(format!("{}{}", filtered_repos.len(), repos_emoji));
