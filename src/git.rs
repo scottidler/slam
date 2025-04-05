@@ -389,41 +389,46 @@ pub fn get_head_branch(repo_path: &Path) -> Result<String> {
         .ok_or_else(|| eyre!("Unexpected format for HEAD branch: {}", full_ref))
 }
 
+/// Attempts to install pre-commit hooks for the repository at `repo_path`.
+/// All output from the pre-commit command is captured and logged at debug level,
+/// so nothing escapes to stdout. Returns:
+/// - Ok(true) if hooks were installed successfully (and .git/hooks/pre-commit exists)
+/// - Ok(false) if installation was attempted but failed (or the hook file is missing)
+/// - Ok(false) if no .pre-commit-config.yaml exists.
 pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
     let pre_commit_config = repo_path.join(".pre-commit-config.yaml");
     if pre_commit_config.exists() {
-        match Command::new("pre-commit").arg("--version").output() {
-            Ok(output) if output.status.success() => {
-                info!(
-                    "pre-commit binary found: {}",
-                    String::from_utf8_lossy(&output.stdout).trim()
-                );
-                let status = Command::new("pre-commit")
-                    .current_dir(repo_path)
-                    .args(&["install"])
-                    .status()?;
-                if status.success() {
-                    if repo_path.join(".git/hooks/pre-commit").exists() {
-                        info!("Pre-commit hooks installed in {}", repo_path.display());
-                        return Ok(true);
-                    } else {
-                        warn!(
-                            "pre-commit install succeeded but .git/hooks/pre-commit not found in {}",
-                            repo_path.display()
-                        );
-                        return Ok(false);
-                    }
-                } else {
-                    warn!("Failed to install pre-commit hooks in {}", repo_path.display());
-                    return Ok(false);
-                }
-            }
-            _ => {
-                warn!("pre-commit binary not found or broken in system.");
+        // Capture the pre-commit version.
+        let version_output = Command::new("pre-commit")
+            .arg("--version")
+            .output()
+            .map_err(|e| eyre!("Failed to run pre-commit --version: {}", e))?;
+        debug!("pre-commit version: {}", String::from_utf8_lossy(&version_output.stdout));
+
+        // Run the install command.
+        let install_output = Command::new("pre-commit")
+            .current_dir(repo_path)
+            .args(&["install"])
+            .output()
+            .map_err(|e| eyre!("Failed to run pre-commit install: {}", e))?;
+        debug!("pre-commit install stdout: {}", String::from_utf8_lossy(&install_output.stdout));
+        debug!("pre-commit install stderr: {}", String::from_utf8_lossy(&install_output.stderr));
+
+        if install_output.status.success() {
+            let hook_path = repo_path.join(".git/hooks/pre-commit");
+            if hook_path.exists() {
+                debug!("Pre-commit hooks installed in {}", repo_path.display());
+                return Ok(true);
+            } else {
+                debug!("pre-commit install succeeded but {} not found", hook_path.display());
                 return Ok(false);
             }
+        } else {
+            debug!("Failed to install pre-commit hooks in {}", repo_path.display());
+            return Ok(false);
         }
     }
+    // No configuration file exists.
     Ok(false)
 }
 
