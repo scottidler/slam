@@ -152,7 +152,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> eyre::Result<()> {
+fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> Result<()> {
     // Emoji definitions for Refresh branch output.
     let success_emoji = "📥";  // Pre-commit hooks installed successfully.
     let error_emoji   = "❗";   // Installation attempted but failed.
@@ -196,8 +196,45 @@ fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -
         cli::SandboxAction::Refresh {} => {
             let root = std::env::current_dir()?;
             let repos = git::find_git_repositories(&root)?;
+
+            // First, prune remote branches on each repository.
+            repos.par_iter().for_each(|repo| {
+                if let Err(e) = git::remote_prune(repo) {
+                    warn!("Failed to prune remote branches in {}: {}", repo.display(), e);
+                }
+            });
+
+            // Then remove any local branches starting with "SLAM" that do not have a corresponding remote branch.
+            repos.par_iter().for_each(|repo| {
+                match git::list_local_branches_with_prefix(repo, "SLAM") {
+                    Ok(local_branches) => {
+                        for branch in local_branches {
+                            match git::remote_branch_exists(repo, &branch) {
+                                Ok(true) => {
+                                    // Remote branch exists; do nothing.
+                                }
+                                Ok(false) => {
+                                    if let Err(e) = git::delete_local_branch(repo, &branch) {
+                                        warn!("Failed to delete local branch '{}' in {}: {}", branch, repo.display(), e);
+                                    } else {
+                                        info!("Deleted local branch '{}' in '{}'", branch, repo.display());
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Error checking remote branch existence for '{}' in {}: {}", branch, repo.display(), e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to list local branches in {}: {}", repo.display(), e);
+                    }
+                }
+            });
+
+            // Process each repository: reset, checkout, pull, and (re)install pre-commit hooks.
             let output_lines: Vec<String> = repos.par_iter().filter_map(|repo| {
-                match (|| -> eyre::Result<String> {
+                match (|| -> Result<String> {
                     let branch = git::get_head_branch(repo)?;
                     let branch_display = branch.magenta();
                     let reposlug = repo
@@ -323,7 +360,7 @@ fn process_review_command(
     org: String,
     action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
-) -> eyre::Result<()> {
+) -> Result<()> {
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
 

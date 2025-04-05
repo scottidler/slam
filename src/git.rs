@@ -457,7 +457,7 @@ pub fn run_pre_commit(repo_path: &Path) -> Result<()> {
 //-----------------------------------------------------------------------------------------------
 
 /// Lists remote branch names for the given repository that start with the specified prefix.
-pub fn list_remote_branches_with_prefix(repo: &str, prefix: &str) -> eyre::Result<Vec<String>> {
+pub fn list_remote_branches_with_prefix(repo: &str, prefix: &str) -> Result<Vec<String>> {
     // Use the GitHub CLI to list remote branches via the API.
     // The command returns the branch names using jq.
     let api_endpoint = format!("repos/{}/branches", repo);
@@ -814,6 +814,45 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
         messages.push(format!("Deleted remote branch '{}' for repo '{}'", branch, repo));
     }
     Ok(messages)
+}
+
+pub fn remote_prune(repo_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["remote", "prune", "origin"])
+        .output()
+        .map_err(|e| eyre!("Failed to execute git remote prune origin: {}", e))?;
+    if output.status.success() {
+        info!("Pruned remote branches in '{}'", repo_path.display());
+        Ok(())
+    } else {
+        Err(eyre!(
+            "Failed to prune remote branches in '{}': {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+pub fn list_local_branches_with_prefix(repo_path: &Path, prefix: &str) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["branch", "--list"])
+        .output()
+        .map_err(|e| eyre!("Failed to list local branches in '{}': {}", repo_path.display(), e))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "Failed to list local branches in '{}': {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().trim_start_matches("* ").to_string())
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    Ok(branches)
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

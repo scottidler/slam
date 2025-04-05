@@ -172,6 +172,13 @@ impl Repo {
         let repo_path = root.join(&self.reposlug);
         let mut transaction = transaction::Transaction::new();
 
+        // Normalize change_id so that it always starts with "SLAM"
+        let normalized_change_id = if self.change_id.starts_with("SLAM") {
+            self.change_id.clone()
+        } else {
+            format!("SLAM-{}", self.change_id)
+        };
+
         // Generate a dry-run diff (without committing) to detect if any change is present.
         let diff_output = self.create_diff(root, buffer, false, simplified);
         if diff_output.trim().is_empty() {
@@ -198,7 +205,12 @@ impl Repo {
         let head_branch = git::get_head_branch(&repo_path)?;
         let original_branch = git::current_branch(&repo_path)?;
         if original_branch != head_branch {
-            info!("Switching from branch '{}' to HEAD branch '{}' in '{}'", original_branch, head_branch, repo_path.display());
+            info!(
+                "Switching from branch '{}' to HEAD branch '{}' in '{}'",
+                original_branch,
+                head_branch,
+                repo_path.display()
+            );
             git::checkout(&repo_path, &head_branch)?;
             transaction.add_rollback({
                 let repo_path = repo_path.clone();
@@ -211,17 +223,29 @@ impl Repo {
         }
         info!("Pulling latest changes in '{}'", repo_path.display());
         git::pull(&repo_path)?;
-        if git::branch_exists(&repo_path, &self.change_id)? {
-            info!("Local branch '{}' exists in '{}'; deleting it.", self.change_id, repo_path.display());
-            git::delete_local_branch(&repo_path, &self.change_id)?;
+        if git::branch_exists(&repo_path, &normalized_change_id)? {
+            info!(
+                "Local branch '{}' exists in '{}'; deleting it.",
+                normalized_change_id,
+                repo_path.display()
+            );
+            git::delete_local_branch(&repo_path, &normalized_change_id)?;
         }
-        if git::remote_branch_exists(&repo_path, &self.change_id)? {
-            info!("Remote branch '{}' exists in '{}'; deleting it.", self.change_id, repo_path.display());
-            git::delete_remote_branch(&repo_path, &self.change_id)?;
+        if git::remote_branch_exists(&repo_path, &normalized_change_id)? {
+            info!(
+                "Remote branch '{}' exists in '{}'; deleting it.",
+                normalized_change_id,
+                repo_path.display()
+            );
+            git::delete_remote_branch(&repo_path, &normalized_change_id)?;
         }
         let branch_origin = git::current_branch(&repo_path)?;
-        info!("Checking out new branch '{}' in '{}'", self.change_id, repo_path.display());
-        git::checkout_branch(&repo_path, &self.change_id)?;
+        info!(
+            "Checking out new branch '{}' in '{}'",
+            normalized_change_id,
+            repo_path.display()
+        );
+        git::checkout_branch(&repo_path, &normalized_change_id)?;
         transaction.add_rollback({
             let repo_path = repo_path.clone();
             let branch_origin = branch_origin.clone();
@@ -230,7 +254,10 @@ impl Repo {
                 git::checkout(&repo_path, &branch_origin)
             }
         });
-        info!("Applying file modifications for change '{}' in '{}'", self.change_id, self.reposlug);
+        info!(
+            "Applying file modifications for change '{}' in '{}'",
+            normalized_change_id, self.reposlug
+        );
         let applied_diff = self.create_diff(root, buffer, true, simplified);
         transaction.add_rollback({
             let repo_path = repo_path.clone();
@@ -240,16 +267,23 @@ impl Repo {
             }
         });
 
-        // New pre-commit phase: run pre-commit hooks using the helper in git.rs.
+        // Run pre-commit hooks.
         git::run_pre_commit(&repo_path)?;
 
-        // If no commit message is provided, this is a dry run.
+        // Dry run: if no commit message is provided, roll back changes and return diff.
         if commit_msg.is_none() {
-            info!("Dry run detected for '{}'; rolling back all changes and returning diff.", self.reposlug);
+            info!(
+                "Dry run detected for '{}'; rolling back all changes and returning diff.",
+                self.reposlug
+            );
             transaction.rollback();
             return Ok(Some(applied_diff));
         }
-        info!("Committing all changes in '{}' with message '{}'", self.reposlug, commit_msg.unwrap());
+        info!(
+            "Committing all changes in '{}' with message '{}'",
+            repo_path.display(),
+            commit_msg.unwrap()
+        );
         git::commit_all(&repo_path, commit_msg.unwrap())?;
         transaction.add_rollback({
             let repo_path = repo_path.clone();
@@ -258,23 +292,35 @@ impl Repo {
                 git::reset_commit(&repo_path)
             }
         });
-        info!("Pushing branch '{}' for '{}' to remote", self.change_id, self.reposlug);
-        git::push_branch(&repo_path, &self.change_id)?;
+        info!(
+            "Pushing branch '{}' for '{}' to remote",
+            normalized_change_id, self.reposlug
+        );
+        git::push_branch(&repo_path, &normalized_change_id)?;
         transaction.add_rollback({
             let repo_path = repo_path.clone();
-            let change_id = self.change_id.clone();
+            let normalized_change_id = normalized_change_id.clone();
             move || {
-                info!("Rolling back push: deleting remote branch '{}' in '{}'", change_id, repo_path.display());
-                git::delete_remote_branch(&repo_path, &change_id)
+                info!(
+                    "Rolling back push: deleting remote branch '{}' in '{}'",
+                    normalized_change_id, repo_path.display()
+                );
+                git::delete_remote_branch(&repo_path, &normalized_change_id)
             }
         });
-        let existing_pr = git::get_pr_number_for_repo(&self.reposlug, &self.change_id)?;
+        let existing_pr = git::get_pr_number_for_repo(&self.reposlug, &normalized_change_id)?;
         if existing_pr != 0 {
-            info!("Existing PR #{} found for '{}'; closing it.", existing_pr, self.reposlug);
+            info!(
+                "Existing PR #{} found for '{}'; closing it.",
+                existing_pr, self.reposlug
+            );
             git::close_pr(&self.reposlug, existing_pr)?;
         }
-        info!("Creating a new PR for branch '{}' in '{}'", self.change_id, self.reposlug);
-        let pr_url = git::create_pr(&repo_path, &self.change_id, commit_msg.unwrap());
+        info!(
+            "Creating a new PR for branch '{}' in '{}'",
+            normalized_change_id, self.reposlug
+        );
+        let pr_url = git::create_pr(&repo_path, &normalized_change_id, commit_msg.unwrap());
         if pr_url.is_none() {
             return Err(eyre!("Failed to create PR for repo '{}'", self.reposlug));
         }
