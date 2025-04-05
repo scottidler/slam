@@ -161,7 +161,7 @@ fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -
             let repos = git::find_repos_in_org(org)?;
             info!("Found {} repos in '{}'", repos.len(), org);
 
-            // Filter by repo patterns using substring matching
+            // Filter by repo patterns using substring matching.
             let filtered_repos: Vec<String> = if repo_ptns.is_empty() {
                 repos.clone()
             } else {
@@ -182,6 +182,14 @@ fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -
                 } else {
                     info!("Cloning repository {} into {}", reposlug, target.display());
                     git::clone_repo(&reposlug, &target)?;
+                }
+                // After cloning/updating, check for .pre-commit-config.yaml and install hooks if present.
+                if target.join(".pre-commit-config.yaml").exists() {
+                    match git::install_pre_commit_hooks(&target) {
+                        Ok(true) => info!("Pre-commit hooks installed in repository {}", reposlug),
+                        Ok(false) => warn!("Pre-commit hooks were not properly installed in repository {}", reposlug),
+                        Err(e) => warn!("Error installing pre-commit hooks in repository {}: {}", reposlug, e),
+                    }
                 }
             }
             return Ok(());

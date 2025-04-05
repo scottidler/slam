@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::process::{Command, Output};
 use log::{info, debug, warn, error};
+use regex::Regex;
 use rayon::iter::{
     IntoParallelIterator,
     ParallelIterator,
@@ -386,6 +387,66 @@ pub fn get_head_branch(repo_path: &Path) -> Result<String> {
         .strip_prefix("origin/")
         .map(String::from)
         .ok_or_else(|| eyre!("Unexpected format for HEAD branch: {}", full_ref))
+}
+
+pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
+    let pre_commit_config = repo_path.join(".pre-commit-config.yaml");
+    if pre_commit_config.exists() {
+        match Command::new("pre-commit").arg("--version").output() {
+            Ok(output) if output.status.success() => {
+                info!(
+                    "pre-commit binary found: {}",
+                    String::from_utf8_lossy(&output.stdout).trim()
+                );
+                let status = Command::new("pre-commit")
+                    .current_dir(repo_path)
+                    .args(&["install"])
+                    .status()?;
+                if status.success() {
+                    if repo_path.join(".git/hooks/pre-commit").exists() {
+                        info!("Pre-commit hooks installed in {}", repo_path.display());
+                        return Ok(true);
+                    } else {
+                        warn!(
+                            "pre-commit install succeeded but .git/hooks/pre-commit not found in {}",
+                            repo_path.display()
+                        );
+                        return Ok(false);
+                    }
+                } else {
+                    warn!("Failed to install pre-commit hooks in {}", repo_path.display());
+                    return Ok(false);
+                }
+            }
+            _ => {
+                warn!("pre-commit binary not found or broken in system.");
+                return Ok(false);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Runs pre-commit hooks for all files in the repository located at `repo_path`.
+/// If the command fails, it attempts to extract the value of the `INSTALL_PYTHON`
+/// field from the .git/hooks/pre-commit file.
+pub fn run_pre_commit(repo_path: &Path) -> Result<()> {
+    info!("Running pre-commit hooks in '{}'", repo_path.display());
+    let output = Command::new("pre-commit")
+        .current_dir(repo_path)
+        .args(&["run", "--all-files"])
+        .output()
+        .map_err(|e| eyre!("Failed to run pre-commit: {}", e))?;
+    if !output.status.success() {
+        let hook_path = repo_path.join(".git/hooks/pre-commit");
+        let hook_content = std::fs::read_to_string(&hook_path).unwrap_or_default();
+        let re = Regex::new(r"INSTALL_PYTHON=(\S+)").unwrap();
+        let install_python = re.captures(&hook_content)
+            .and_then(|caps| caps.get(1).map(|m| m.as_str()))
+            .unwrap_or("Not found");
+        return Err(eyre!("pre-commit run --all-files failed. INSTALL_PYTHON: {}", install_python));
+    }
+    Ok(())
 }
 
 //-----------------------------------------------------------------------------------------------

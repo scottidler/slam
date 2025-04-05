@@ -239,7 +239,11 @@ impl Repo {
                 git::reset_hard(&repo_path)
             }
         });
-        // If no commit message is provided, we treat it as a dry run.
+
+        // New pre-commit phase: run pre-commit hooks using the helper in git.rs.
+        git::run_pre_commit(&repo_path)?;
+
+        // If no commit message is provided, this is a dry run.
         if commit_msg.is_none() {
             info!("Dry run detected for '{}'; rolling back all changes and returning diff.", self.reposlug);
             transaction.rollback();

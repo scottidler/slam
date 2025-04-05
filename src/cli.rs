@@ -31,7 +31,11 @@ fn validate_buffer(s: &str) -> Result<usize, String> {
 pub fn get_cli_tool_status() -> String {
     let success = "✅";
     let failure = "❌";
-    let tools = [("git", &["--version"]), ("gh", &["--version"])];
+    let tools = [
+        ("git", &["--version"]),
+        ("gh", &["--version"]),
+        ("pre-commit", &["--version"]),
+    ];
 
     let mut output_string = String::new();
     output_string.push('\n');
