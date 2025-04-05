@@ -308,6 +308,8 @@ pub enum ReviewAction {
         )]
         change_id: String,
     },
+    #[command(about = "Purge: close every PR and delete every remote branch prefixed with SLAM for each matching repo")]
+    Purge {},
 }
 
 #[derive(Subcommand, Debug)]

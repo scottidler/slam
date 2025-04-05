@@ -215,7 +215,7 @@ pub fn get_prs_for_repos(reposlugs: Vec<String>) -> Result<HashMap<String, Vec<(
                         }
                     }
                 } else {
-                    log::debug!("gh pr list failed for repo '{}'", reposlug);
+                    debug!("gh pr list failed for repo '{}'", reposlug);
                 }
             }
             HashMap::new()
@@ -456,6 +456,27 @@ pub fn run_pre_commit(repo_path: &Path) -> Result<()> {
 
 //-----------------------------------------------------------------------------------------------
 
+/// Lists remote branch names for the given repository that start with the specified prefix.
+pub fn list_remote_branches_with_prefix(repo: &str, prefix: &str) -> eyre::Result<Vec<String>> {
+    // Use the GitHub CLI to list remote branches via the API.
+    // The command returns the branch names using jq.
+    let api_endpoint = format!("repos/{}/branches", repo);
+    let output = Command::new("gh")
+        .args(["api", &api_endpoint, "--jq", ".[] | .name"])
+        .output()
+        .map_err(|e| eyre!("Failed to execute gh api for repo '{}': {}", repo, e))?;
+    if !output.status.success() {
+        return Err(eyre!("Failed to list remote branches for repo '{}'", repo));
+    }
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let branches: Vec<String> = output_str
+        .lines()
+        .map(|line| line.trim().trim_matches('"').to_string())
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    Ok(branches)
+}
+
 pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str) -> Option<String> {
     let title = change_id.to_string();
 
@@ -464,7 +485,7 @@ pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str)
         commit_msg
     );
 
-    log::info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), change_id);
+    info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), change_id);
 
     let pr_output = std::process::Command::new("gh")
         .current_dir(repo_path)
@@ -480,15 +501,15 @@ pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str)
     match pr_output {
         Ok(output) if output.status.success() => {
             let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            log::info!("PR created: {}", url);
+            info!("PR created: {}", url);
             Some(url)
         }
         Ok(output) => {
-            log::warn!("Failed to create PR: {}", String::from_utf8_lossy(&output.stderr));
+            warn!("Failed to create PR: {}", String::from_utf8_lossy(&output.stderr));
             None
         }
         Err(err) => {
-            log::warn!("Failed to execute `gh pr create`: {}", err);
+            error!("Failed to execute `gh pr create`: {}", err);
             None
         }
     }

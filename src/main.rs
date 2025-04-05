@@ -162,7 +162,7 @@ fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -
         cli::SandboxAction::Setup {} => {
             let org = "tatari-tv";
             let repos = git::find_repos_in_org(org)?;
-            log::info!("Found {} repos in '{}'", repos.len(), org);
+            info!("Found {} repos in '{}'", repos.len(), org);
 
             let filtered_repos: Vec<String> = if repo_ptns.is_empty() {
                 repos.clone()
@@ -171,23 +171,23 @@ fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -
                     repo_ptns.iter().any(|ptn| r.contains(ptn))
                 }).collect()
             };
-            log::info!("After filtering, {} repos remain", filtered_repos.len());
+            info!("After filtering, {} repos remain", filtered_repos.len());
 
             let cwd = std::env::current_dir()?;
             for reposlug in filtered_repos {
                 let target = cwd.join(&reposlug);
                 if target.exists() {
-                    log::info!("Repository {} already exists in {}; updating...", reposlug, target.display());
+                    info!("Repository {} already exists in {}; updating...", reposlug, target.display());
                     git::pull(&target)?;
                 } else {
-                    log::info!("Cloning repository {} into {}", reposlug, target.display());
+                    info!("Cloning repository {} into {}", reposlug, target.display());
                     git::clone_repo(&reposlug, &target)?;
                 }
                 if target.join(".pre-commit-config.yaml").exists() {
                     match git::install_pre_commit_hooks(&target) {
-                        Ok(true) => log::info!("Pre-commit hooks installed in repository {}", reposlug),
-                        Ok(false) => log::warn!("Pre-commit hooks were not properly installed in repository {}", reposlug),
-                        Err(e) => log::warn!("Error installing pre-commit hooks in repository {}: {}", reposlug, e),
+                        Ok(true) => info!("Pre-commit hooks installed in repository {}", reposlug),
+                        Ok(false) => warn!("Pre-commit hooks were not properly installed in repository {}", reposlug),
+                        Err(e) => error!("Error installing pre-commit hooks in repository {}: {}", reposlug, e),
                     }
                 }
             }
@@ -219,7 +219,7 @@ fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -
                 })() {
                     Ok(line) => Some(line),
                     Err(e) => {
-                        log::warn!("Error processing repo {}: {}", repo.display(), e);
+                        warn!("Error processing repo {}: {}", repo.display(), e);
                         None
                     }
                 }
@@ -319,11 +319,11 @@ fn _load_service_account_pat() -> std::io::Result<String> {
     fs::read_to_string(token_path).map(|s| s.trim().to_string())
 }
 
-pub fn process_review_command(
+fn process_review_command(
     org: String,
     action: &cli::ReviewAction,
     reposlug_ptns: Vec<String>,
-) -> Result<()> {
+) -> eyre::Result<()> {
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
 
@@ -346,68 +346,78 @@ pub fn process_review_command(
     info!("After filtering, {} repos remain", filtered_reposlugs.len());
     debug!("Filtered repository slugs: {:?}", filtered_reposlugs);
 
-    let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
-    debug!("Fetched PR map: {:?}", pr_map);
-
-    let change_id_filter: Box<dyn Fn(&String) -> bool> = match action {
-        cli::ReviewAction::Ls { change_id_ptns, .. } => Box::new(move |key| {
-            key.starts_with("SLAM")
-                && (change_id_ptns.is_empty()
-                    || change_id_ptns.iter().any(|ptn| {
-                        if let Ok(pattern) = Pattern::new(ptn) {
-                            pattern.matches(key)
-                        } else {
-                            false
-                        }
-                    }))
-        }),
-        cli::ReviewAction::Approve { change_id, .. }
-        | cli::ReviewAction::Delete { change_id }
-        | cli::ReviewAction::Clone { change_id, .. } => {
-            let change_id_owned = change_id.clone();
-            Box::new(move |key| key.starts_with("SLAM") && key == &change_id_owned)
-        }
-    };
-
-    let mut filtered_pr_map: Vec<(String, Vec<(String, u64, String)>)> = pr_map
-        .into_iter()
-        .filter(|(key, _)| change_id_filter(key))
-        .collect();
-    if filtered_pr_map.is_empty() {
-        warn!("No open PRs found matching Change ID");
-        return Ok(());
-    }
-    filtered_pr_map.sort_by(|a, b| a.0.cmp(&b.0));
-    debug!("Filtered PR groups: {:?}", filtered_pr_map);
-
-    for (change_id, repo_infos) in filtered_pr_map {
-        let author = repo_infos
-            .first()
-            .map(|(_, _, a)| a.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        println!("{} ({})", change_id, author);
-
-        // For each repository in this PR group, delegate to the repo review method.
-        // For Clone actions, Repo::review will handle the clone/update and checkout.
-        let repo_outputs: Vec<String> = repo_infos
-            .into_par_iter()
-            .map(|(reposlug, pr_number, _)| {
-                let repo = repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
-                match repo.review(action, matches!(action, cli::ReviewAction::Ls { change_id_ptns, .. } if change_id_ptns.is_empty())) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        error!("Review failed for {}: {}", reposlug, e);
-                        format!("Repo {} failed: {}", reposlug, e)
-                    }
+    match action {
+        cli::ReviewAction::Purge {} => {
+            // For the purge action, process each filtered repo individually.
+            for reposlug in filtered_reposlugs {
+                let repo = crate::repo::Repo::create_repo_from_remote_with_pr(&reposlug, "", 0);
+                match repo.review(action, false) {
+                    Ok(msg) => println!("{}: {}", reposlug, msg),
+                    Err(e) => eprintln!("Error purging repo {}: {}", reposlug, e),
                 }
-            })
-            .collect();
-
-        for output in repo_outputs {
-            println!("{}", output);
+            }
+            return Ok(());
         }
-        println!();
-    }
+        _ => {
+            // Existing behavior: get a map of change IDs to PR details.
+            let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
+            let mut filtered_pr_map: Vec<(String, Vec<(String, u64, String)>)> = pr_map
+                .into_iter()
+                .filter(|(key, _)| {
+                    // Filter by change ID only if action is not Purge.
+                    match action {
+                        cli::ReviewAction::Ls { change_id_ptns, .. } => {
+                            key.starts_with("SLAM")
+                                && (change_id_ptns.is_empty()
+                                    || change_id_ptns.iter().any(|ptn| {
+                                        if let Ok(pattern) = glob::Pattern::new(ptn) {
+                                            pattern.matches(key)
+                                        } else {
+                                            false
+                                        }
+                                    }))
+                        }
+                        cli::ReviewAction::Approve { change_id, .. }
+                        | cli::ReviewAction::Delete { change_id }
+                        | cli::ReviewAction::Clone { change_id, .. } => key.starts_with("SLAM") && key == change_id,
+                        _ => false,
+                    }
+                })
+                .collect();
+            if filtered_pr_map.is_empty() {
+                warn!("No open PRs found matching Change ID");
+                return Ok(());
+            }
+            filtered_pr_map.sort_by(|a, b| a.0.cmp(&b.0));
+            debug!("Filtered PR groups: {:?}", filtered_pr_map);
 
+            for (change_id, repo_infos) in filtered_pr_map {
+                let author = repo_infos
+                    .first()
+                    .map(|(_, _, a)| a.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!("{} ({})", change_id, author);
+
+                let repo_outputs: Vec<String> = repo_infos
+                    .into_iter()
+                    .map(|(reposlug, pr_number, _)| {
+                        let repo = crate::repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
+                        match repo.review(action, matches!(action, cli::ReviewAction::Ls { change_id_ptns, .. } if change_id_ptns.is_empty())) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                error!("Review failed for {}: {}", reposlug, e);
+                                format!("Repo {} failed: {}", reposlug, e)
+                            }
+                        }
+                    })
+                    .collect();
+
+                for output in repo_outputs {
+                    println!("{}", output);
+                }
+                println!();
+            }
+        }
+    }
     Ok(())
 }

@@ -293,12 +293,9 @@ impl Repo {
                 }
             }
             cli::ReviewAction::Clone { .. } => {
-                // Determine the target folder relative to the current working directory.
                 let cwd = std::env::current_dir()?;
                 let target = cwd.join(&self.reposlug);
-                // Use the idempotent clone/update function and check out the change_id branch.
                 git::clone_or_update_repo(&self.reposlug, &target, &self.change_id)?;
-                // Compute the relative path for reporting.
                 let rel_path = target.strip_prefix(&cwd).unwrap_or(&target);
                 Ok(format!(
                     "ensure clone {} -> {} and checkout to {}",
@@ -350,6 +347,29 @@ impl Repo {
                 }
                 git::delete_remote_branch_gh(&self.reposlug, &self.change_id)?;
                 messages.push(format!("Deleted remote branch '{}' for repo '{}'", self.change_id, self.reposlug));
+                Ok(messages.join("\n"))
+            }
+            cli::ReviewAction::Purge {} => {
+                let mut messages = Vec::new();
+                // Close every open PR for this repository.
+                let pr_output = std::process::Command::new("gh")
+                    .args(&["pr", "list", "--repo", &self.reposlug, "--state", "open", "--json", "number"])
+                    .output()?;
+                if !pr_output.status.success() {
+                    return Err(eyre!("Failed to list open PRs for repo '{}'", self.reposlug));
+                }
+                let pr_numbers: Vec<u64> = serde_json::from_slice(&pr_output.stdout)
+                    .map_err(|e| eyre!("Failed to parse open PRs JSON for repo '{}': {}", self.reposlug, e))?;
+                for pr in pr_numbers {
+                    git::close_pr(&self.reposlug, pr)?;
+                    messages.push(format!("Closed PR #{} for repo '{}'", pr, self.reposlug));
+                }
+                // Delete every remote branch that starts with "SLAM".
+                let branches = git::list_remote_branches_with_prefix(&self.reposlug, "SLAM")?;
+                for branch in branches {
+                    git::delete_remote_branch_gh(&self.reposlug, &branch)?;
+                    messages.push(format!("Deleted remote branch '{}' for repo '{}'", branch, self.reposlug));
+                }
                 Ok(messages.join("\n"))
             }
         }
