@@ -487,7 +487,7 @@ pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str)
 
     info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), change_id);
 
-    let pr_output = std::process::Command::new("gh")
+    let pr_output = Command::new("gh")
         .current_dir(repo_path)
         .args([
             "pr",
@@ -789,6 +789,31 @@ pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
         reviewed,
         checked,
     })
+}
+
+/// New helper function to purge a repository by closing all open PRs and deleting all remote branches with the prefix "SLAM".
+pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
+    let mut messages = Vec::new();
+    // Close every open PR for this repository.
+    let pr_output = Command::new("gh")
+        .args(&["pr", "list", "--repo", repo, "--state", "open", "--json", "number"])
+        .output()?;
+    if !pr_output.status.success() {
+        return Err(eyre!("Failed to list open PRs for repo '{}'", repo));
+    }
+    let pr_numbers: Vec<u64> = serde_json::from_slice(&pr_output.stdout)
+        .map_err(|e| eyre!("Failed to parse open PRs JSON for repo '{}': {}", repo, e))?;
+    for pr in pr_numbers {
+        close_pr(repo, pr)?;
+        messages.push(format!("Closed PR #{} for repo '{}'", pr, repo));
+    }
+    // Delete every remote branch that starts with "SLAM".
+    let branches = list_remote_branches_with_prefix(repo, "SLAM")?;
+    for branch in branches {
+        delete_remote_branch_gh(repo, &branch)?;
+        messages.push(format!("Deleted remote branch '{}' for repo '{}'", branch, repo));
+    }
+    Ok(messages)
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

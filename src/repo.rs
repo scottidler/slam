@@ -350,26 +350,7 @@ impl Repo {
                 Ok(messages.join("\n"))
             }
             cli::ReviewAction::Purge {} => {
-                let mut messages = Vec::new();
-                // Close every open PR for this repository.
-                let pr_output = std::process::Command::new("gh")
-                    .args(&["pr", "list", "--repo", &self.reposlug, "--state", "open", "--json", "number"])
-                    .output()?;
-                if !pr_output.status.success() {
-                    return Err(eyre!("Failed to list open PRs for repo '{}'", self.reposlug));
-                }
-                let pr_numbers: Vec<u64> = serde_json::from_slice(&pr_output.stdout)
-                    .map_err(|e| eyre!("Failed to parse open PRs JSON for repo '{}': {}", self.reposlug, e))?;
-                for pr in pr_numbers {
-                    git::close_pr(&self.reposlug, pr)?;
-                    messages.push(format!("Closed PR #{} for repo '{}'", pr, self.reposlug));
-                }
-                // Delete every remote branch that starts with "SLAM".
-                let branches = git::list_remote_branches_with_prefix(&self.reposlug, "SLAM")?;
-                for branch in branches {
-                    git::delete_remote_branch_gh(&self.reposlug, &branch)?;
-                    messages.push(format!("Deleted remote branch '{}' for repo '{}'", branch, self.reposlug));
-                }
+                let messages = git::purge_repo(&self.reposlug)?;
                 Ok(messages.join("\n"))
             }
         }
@@ -408,7 +389,6 @@ impl Repo {
 fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     let search_pattern = repo.join(pattern).to_string_lossy().to_string();
     let mut matches = Vec::new();
-
     for entry in glob::glob(&search_pattern)? {
         if let Ok(path) = entry {
             let relative_path = path.strip_prefix(repo)?.to_path_buf();
