@@ -816,6 +816,29 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
     Ok(messages)
 }
 
+pub fn get_repo_slug(repo_path: &Path) -> Result<String> {
+    // Get the remote origin URL.
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["config", "--get", "remote.origin.url"])
+        .output()
+        .map_err(|e| eyre!("Failed to get remote origin url for {}: {}", repo_path.display(), e))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "Failed to get remote origin url for {}: {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Assume the URL is of the form "git@github.com:org/reponame.git"
+    if let Some(stripped) = url.strip_prefix("git@github.com:") {
+        let repo = stripped.trim_end_matches(".git");
+        return Ok(repo.to_string());
+    }
+    Err(eyre!("Unexpected remote URL format: {}", url))
+}
+
 pub fn remote_prune(repo_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)

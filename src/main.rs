@@ -11,7 +11,6 @@ use clap::{CommandFactory, FromArgMatches};
 use eyre::Result;
 use glob::Pattern;
 use itertools::Itertools;
-use colored::Colorize;
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
 
@@ -24,6 +23,7 @@ mod diff;
 mod git;
 mod repo;
 mod utils;
+mod sandbox;
 mod transaction;
 
 /// Extracts the repository name (the part after '/') from a reposlug.
@@ -152,118 +152,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> Result<()> {
-    // Emoji definitions for Refresh branch output.
-    let success_emoji = "📥";  // Pre-commit hooks installed successfully.
-    let error_emoji   = "❗";   // Installation attempted but failed.
-    let missing_emoji = "❓";   // No .pre-commit-config.yaml present.
-
+fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> eyre::Result<()> {
     match action {
-        cli::SandboxAction::Setup {} => {
-            let org = "tatari-tv";
-            let repos = git::find_repos_in_org(org)?;
-            info!("Found {} repos in '{}'", repos.len(), org);
-
-            let filtered_repos: Vec<String> = if repo_ptns.is_empty() {
-                repos.clone()
-            } else {
-                repos.into_iter().filter(|r| {
-                    repo_ptns.iter().any(|ptn| r.contains(ptn))
-                }).collect()
-            };
-            info!("After filtering, {} repos remain", filtered_repos.len());
-
-            let cwd = std::env::current_dir()?;
-            for reposlug in filtered_repos {
-                let target = cwd.join(&reposlug);
-                if target.exists() {
-                    info!("Repository {} already exists in {}; updating...", reposlug, target.display());
-                    git::pull(&target)?;
-                } else {
-                    info!("Cloning repository {} into {}", reposlug, target.display());
-                    git::clone_repo(&reposlug, &target)?;
-                }
-                if target.join(".pre-commit-config.yaml").exists() {
-                    match git::install_pre_commit_hooks(&target) {
-                        Ok(true) => info!("Pre-commit hooks installed in repository {}", reposlug),
-                        Ok(false) => warn!("Pre-commit hooks were not properly installed in repository {}", reposlug),
-                        Err(e) => error!("Error installing pre-commit hooks in repository {}: {}", reposlug, e),
-                    }
-                }
-            }
-            Ok(())
-        }
-        cli::SandboxAction::Refresh {} => {
-            let root = std::env::current_dir()?;
-            let repos = git::find_git_repositories(&root)?;
-
-            // First, prune remote branches on each repository.
-            repos.par_iter().for_each(|repo| {
-                if let Err(e) = git::remote_prune(repo) {
-                    warn!("Failed to prune remote branches in {}: {}", repo.display(), e);
-                }
-            });
-
-            // Then remove any local branches starting with "SLAM" that do not have a corresponding remote branch.
-            repos.par_iter().for_each(|repo| {
-                match git::list_local_branches_with_prefix(repo, "SLAM") {
-                    Ok(local_branches) => {
-                        for branch in local_branches {
-                            match git::remote_branch_exists(repo, &branch) {
-                                Ok(true) => {
-                                    // Remote branch exists; do nothing.
-                                }
-                                Ok(false) => {
-                                    if let Err(e) = git::delete_local_branch(repo, &branch) {
-                                        warn!("Failed to delete local branch '{}' in {}: {}", branch, repo.display(), e);
-                                    } else {
-                                        info!("Deleted local branch '{}' in '{}'", branch, repo.display());
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Error checking remote branch existence for '{}' in {}: {}", branch, repo.display(), e);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to list local branches in {}: {}", repo.display(), e);
-                    }
-                }
-            });
-
-            // Process each repository: reset, checkout, pull, and (re)install pre-commit hooks.
-            let output_lines: Vec<String> = repos.par_iter().filter_map(|repo| {
-                match (|| -> Result<String> {
-                    let branch = git::get_head_branch(repo)?;
-                    let branch_display = branch.magenta();
-                    let reposlug = repo
-                        .file_name()
-                        .map(|os_str| os_str.to_string_lossy().to_string())
-                        .unwrap_or_else(|| repo.display().to_string());
-                    git::reset_hard(repo)?;
-                    git::checkout(repo, &branch)?;
-                    git::pull(repo)?;
-                    let emoji = if repo.join(".pre-commit-config.yaml").exists() {
-                        match git::install_pre_commit_hooks(repo) {
-                            Ok(true) => success_emoji,
-                            Ok(false) | Err(_) => error_emoji,
-                        }
-                    } else {
-                        missing_emoji
-                    };
-                    Ok(format!("{:>6} {} {}", branch_display, emoji, reposlug))
-                })() {
-                    Ok(line) => Some(line),
-                    Err(e) => {
-                        warn!("Error processing repo {}: {}", repo.display(), e);
-                        None
-                    }
-                }
-            }).collect();
-            println!("{}", output_lines.join("\n"));
-            Ok(())
-        }
+        cli::SandboxAction::Setup {} => sandbox::sandbox_setup(repo_ptns),
+        cli::SandboxAction::Refresh {} => sandbox::sandbox_refresh(),
     }
 }
 
