@@ -87,15 +87,16 @@ impl Repo {
 
         if let Some(change) = self.change.as_ref() {
             match change {
-                // For Delete, we always generate a detailed diff.
                 Change::Delete => {
                     for file in &self.files {
-                        let mut file_diff = String::new();
-                        file_diff.push_str(&format!("{}\n", utils::indent(&format!("D {}", file), 2)));
                         let full_path = repo_path.join(file);
+                        debug!("Generating diff for file '{}' for deletion", full_path.display());
+                        let mut file_diff = format!("{}\n", utils::indent(&format!("D {}", file), 2));
                         match std::fs::read_to_string(&full_path) {
                             Ok(content) => {
+                                debug!("Original content length for '{}': {}", file, content.len());
                                 let diff = diff::generate_diff(&content, "", buffer);
+                                debug!("Diff output for deletion:\n{}", diff);
                                 for line in diff.lines() {
                                     file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                                 }
@@ -112,46 +113,41 @@ impl Repo {
                         }
                     }
                 }
-                // For Sub and Regex, we want to run the file processing
-                // and then decide how to output based on simplified.
                 _ => {
                     for file in &self.files {
                         let full_path = repo_path.join(file);
+                        debug!("Processing file '{}' for change", full_path.display());
                         if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            let mut file_diff = String::new();
-                            if simplified {
-                                file_diff.push_str(&format!(
-                                    "{}\n",
-                                    utils::indent(&format!(">< {}", file), 2)
-                                ));
+                            // Log raw diff for debugging.
+                            debug!("Raw diff for file '{}':\n{}", file, diff);
+                            let mut file_diff = if simplified {
+                                format!("{}\n", utils::indent(&format!(">< {}", file), 2))
                             } else {
-                                file_diff.push_str(&format!(
-                                    "{}\n",
-                                    utils::indent(&format!("M {}", file), 2)
-                                ));
-                                for line in diff.lines() {
-                                    file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
-                                }
+                                format!("{}\n", utils::indent(&format!("M {}", file), 2))
+                            };
+                            for line in diff.lines() {
+                                file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                             }
                             file_diffs.push_str(&file_diff);
+                        } else {
+                            debug!("No diff generated for file '{}'", file);
                         }
                     }
                 }
             }
         } else {
-            // Fallback when no change is specified.
             for file in &self.files {
-                file_diffs.push_str(&format!(
-                    "{}\n",
-                    utils::indent(&format!(">< {}", file), 2)
-                ));
+                file_diffs.push_str(&format!("{}\n", utils::indent(&format!(">< {}", file), 2)));
             }
         }
 
         if file_diffs.trim().is_empty() {
+            debug!("No diff output for repo '{}'", self.reposlug);
             "".to_string()
         } else {
-            format!("{}\n{}", self.reposlug, file_diffs)
+            let final_diff = format!("{}\n{}", self.reposlug, file_diffs);
+            debug!("Final diff output for repo '{}':\n{}", self.reposlug, final_diff);
+            final_diff
         }
     }
 
@@ -186,7 +182,6 @@ impl Repo {
             return Ok(None);
         }
 
-        // Proceed with transactional updates.
         if git::has_untracked_files(&repo_path)? {
             return Err(eyre!("Untracked files exist in '{}'. Aborting.", repo_path.display()));
         }
@@ -202,14 +197,13 @@ impl Repo {
                 }
             });
         }
+
         let head_branch = git::get_head_branch(&repo_path)?;
         let original_branch = git::current_branch(&repo_path)?;
         if original_branch != head_branch {
             info!(
                 "Switching from branch '{}' to HEAD branch '{}' in '{}'",
-                original_branch,
-                head_branch,
-                repo_path.display()
+                original_branch, head_branch, repo_path.display()
             );
             git::checkout(&repo_path, &head_branch)?;
             transaction.add_rollback({
@@ -221,8 +215,10 @@ impl Repo {
                 }
             });
         }
+
         info!("Pulling latest changes in '{}'", repo_path.display());
         git::pull(&repo_path)?;
+
         if git::branch_exists(&repo_path, &normalized_change_id)? {
             info!(
                 "Local branch '{}' exists in '{}'; deleting it.",
@@ -239,6 +235,7 @@ impl Repo {
             );
             git::delete_remote_branch(&repo_path, &normalized_change_id)?;
         }
+
         let branch_origin = git::current_branch(&repo_path)?;
         info!(
             "Checking out new branch '{}' in '{}'",
@@ -254,6 +251,7 @@ impl Repo {
                 git::checkout(&repo_path, &branch_origin)
             }
         });
+
         info!(
             "Applying file modifications for change '{}' in '{}'",
             normalized_change_id, self.reposlug
@@ -268,7 +266,8 @@ impl Repo {
         });
 
         // Run pre-commit hooks.
-        git::run_pre_commit(&repo_path)?;
+        git::run_pre_commit_with_retry(&repo_path, 2)?;
+
 
         // Dry run: if no commit message is provided, roll back changes and return diff.
         if commit_msg.is_none() {
@@ -279,6 +278,7 @@ impl Repo {
             transaction.rollback();
             return Ok(Some(applied_diff));
         }
+
         info!(
             "Committing all changes in '{}' with message '{}'",
             repo_path.display(),
@@ -292,6 +292,7 @@ impl Repo {
                 git::reset_commit(&repo_path)
             }
         });
+
         info!(
             "Pushing branch '{}' for '{}' to remote",
             normalized_change_id, self.reposlug
@@ -303,11 +304,13 @@ impl Repo {
             move || {
                 info!(
                     "Rolling back push: deleting remote branch '{}' in '{}'",
-                    normalized_change_id, repo_path.display()
+                    normalized_change_id,
+                    repo_path.display()
                 );
                 git::delete_remote_branch(&repo_path, &normalized_change_id)
             }
         });
+
         let existing_pr = git::get_pr_number_for_repo(&self.reposlug, &normalized_change_id)?;
         if existing_pr != 0 {
             info!(
@@ -316,6 +319,7 @@ impl Repo {
             );
             git::close_pr(&self.reposlug, existing_pr)?;
         }
+
         info!(
             "Creating a new PR for branch '{}' in '{}'",
             normalized_change_id, self.reposlug
@@ -324,6 +328,7 @@ impl Repo {
         if pr_url.is_none() {
             return Err(eyre!("Failed to create PR for repo '{}'", self.reposlug));
         }
+
         transaction.commit();
         info!("Repository '{}' processed successfully.", self.reposlug);
         Ok(Some(applied_diff))

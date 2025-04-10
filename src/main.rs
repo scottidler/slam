@@ -152,7 +152,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> eyre::Result<()> {
+fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> Result<()> {
     match action {
         cli::SandboxAction::Setup {} => sandbox::sandbox_setup(repo_ptns),
         cli::SandboxAction::Refresh {} => sandbox::sandbox_refresh(),

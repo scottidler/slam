@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::process::{Command, Output};
 use log::{info, debug, warn, error};
-use regex::Regex;
 use rayon::iter::{
     IntoParallelIterator,
     ParallelIterator,
 };
+
+const MAX_RETRY: usize = 5;
 
 fn git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
@@ -271,6 +272,20 @@ pub fn delete_local_branch(repo_path: &Path, branch: &str) -> Result<()> {
     }
 }
 
+pub fn safe_delete_local_branch(repo: &std::path::Path, branch: &str) -> Result<()> {
+    let current_branch = current_branch(repo)?;
+    if current_branch.trim() == branch.trim() {
+        let head_branch = get_head_branch(repo)?;
+        log::info!(
+            "Current branch '{}' is scheduled for deletion. Checking out HEAD branch '{}' instead.",
+            branch,
+            head_branch
+        );
+        checkout(repo, &head_branch)?;
+    }
+    delete_local_branch(repo, branch)
+}
+
 pub fn delete_remote_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
@@ -398,21 +413,19 @@ pub fn get_head_branch(repo_path: &Path) -> Result<String> {
 pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
     let pre_commit_config = repo_path.join(".pre-commit-config.yaml");
     if pre_commit_config.exists() {
-        // Capture the pre-commit version.
         let version_output = Command::new("pre-commit")
             .arg("--version")
             .output()
             .map_err(|e| eyre!("Failed to run pre-commit --version: {}", e))?;
-        debug!("pre-commit version: {}", String::from_utf8_lossy(&version_output.stdout));
+        debug!("pre-commit version: {}", String::from_utf8_lossy(&version_output.stdout).trim_end());
 
-        // Run the install command.
         let install_output = Command::new("pre-commit")
             .current_dir(repo_path)
             .args(&["install"])
             .output()
             .map_err(|e| eyre!("Failed to run pre-commit install: {}", e))?;
-        debug!("pre-commit install stdout: {}", String::from_utf8_lossy(&install_output.stdout));
-        debug!("pre-commit install stderr: {}", String::from_utf8_lossy(&install_output.stderr));
+        debug!("pre-commit install stdout: {}", String::from_utf8_lossy(&install_output.stdout).trim_end());
+        debug!("pre-commit install stderr: {}", String::from_utf8_lossy(&install_output.stderr).trim_end());
 
         if install_output.status.success() {
             let hook_path = repo_path.join(".git/hooks/pre-commit");
@@ -432,26 +445,96 @@ pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// Runs pre-commit hooks for all files in the repository located at `repo_path`.
-/// If the command fails, it attempts to extract the value of the `INSTALL_PYTHON`
-/// field from the .git/hooks/pre-commit file.
-pub fn run_pre_commit(repo_path: &Path) -> Result<()> {
-    info!("Running pre-commit hooks in '{}'", repo_path.display());
-    let output = Command::new("pre-commit")
-        .current_dir(repo_path)
-        .args(&["run", "--all-files"])
-        .output()
-        .map_err(|e| eyre!("Failed to run pre-commit: {}", e))?;
-    if !output.status.success() {
-        let hook_path = repo_path.join(".git/hooks/pre-commit");
-        let hook_content = std::fs::read_to_string(&hook_path).unwrap_or_default();
-        let re = Regex::new(r"INSTALL_PYTHON=(\S+)").unwrap();
-        let install_python = re.captures(&hook_content)
-            .and_then(|caps| caps.get(1).map(|m| m.as_str()))
-            .unwrap_or("Not found");
-        return Err(eyre!("pre-commit run --all-files failed. INSTALL_PYTHON: {}", install_python));
+
+/// Runs the pre-commit hooks with retries.
+///
+/// The function accepts a `retries` parameter which specifies the maximum number
+/// of consecutive attempts (with identical exit code, stdout, and stderr) that are allowed
+/// before failing. In addition, the function will not retry more than MAX_RETRY times.
+///
+/// # Parameters
+///
+/// - `repo_path`: the repository directory in which to run the pre-commit hooks.
+/// - `retries`: number of consecutive identical failures allowed before aborting.
+///
+/// # Returns
+///
+/// - `Ok(())` if the pre-commit hooks eventually succeed.
+/// - `Err` with a detailed message if the command repeatedly fails with identical output
+///   (and exit code) for at least `retries` times, or if it exceeds MAX_RETRY attempts.
+pub fn run_pre_commit_with_retry(repo_path: &Path, retries: usize) -> Result<()> {
+    let mut identical_count = 0;
+    let mut previous_attempt: Option<(Option<i32>, String, String)> = None;
+
+    // Never exceed MAX_RETRY attempts.
+    for attempt in 1..=MAX_RETRY {
+        debug!("Running pre-commit hooks (attempt {} of {})", attempt, MAX_RETRY);
+
+        let output = Command::new("pre-commit")
+            .current_dir(repo_path)
+            .args(&["run", "--all-files"])
+            .output()
+            .map_err(|e| eyre!("Failed to execute pre-commit: {}", e))?;
+
+        let current_exit = output.status.code();
+        let current_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let current_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        debug!("Attempt {}: exit code: {:?}", attempt, current_exit);
+        debug!("Attempt {}: stdout:\n{}", attempt, current_stdout);
+        debug!("Attempt {}: stderr:\n{}", attempt, current_stderr);
+
+        if output.status.success() {
+            debug!("Pre-commit hooks succeeded on attempt {}", attempt);
+            return Ok(());
+        } else {
+            if let Some((prev_exit, prev_stdout, prev_stderr)) = &previous_attempt {
+                if *prev_exit == current_exit
+                    && *prev_stdout == current_stdout
+                    && *prev_stderr == current_stderr
+                {
+                    identical_count += 1;
+                    debug!(
+                        "Attempt {} identical to previous failure (identical count: {}).",
+                        attempt, identical_count
+                    );
+                    if identical_count >= retries {
+                        return Err(eyre!(
+                            "Pre-commit hook failed after {} attempts with identical output:\n\
+                             Exit code: {:?}\nstdout:\n{}\nstderr:\n{}",
+                            attempt,
+                            current_exit,
+                            current_stdout,
+                            current_stderr
+                        ));
+                    }
+                } else {
+                    debug!("Output or exit code differs from the previous attempt; resetting identical count.");
+                    identical_count = 0;
+                }
+            } else {
+                debug!("This is the first recorded failure.");
+            }
+            previous_attempt = Some((current_exit, current_stdout.clone(), current_stderr.clone()));
+        }
     }
-    Ok(())
+    Err(eyre!(
+        "Pre-commit hook failed after {} attempts. Last failure:\n\
+         Exit code: {:?}\nstdout:\n{}\nstderr:\n{}",
+        MAX_RETRY,
+        previous_attempt
+            .as_ref()
+            .map(|(code, _, _)| code)
+            .unwrap_or(&None),
+        previous_attempt
+            .as_ref()
+            .map(|(_, stdout, _)| stdout)
+            .unwrap_or(&"".to_string()),
+        previous_attempt
+            .as_ref()
+            .map(|(_, _, stderr)| stderr)
+            .unwrap_or(&"".to_string())
+    ))
 }
 
 //-----------------------------------------------------------------------------------------------

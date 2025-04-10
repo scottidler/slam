@@ -35,7 +35,7 @@ pub fn refresh_repo(repo: &Path) -> Result<String> {
                     }
                     Ok(false) => {
                         debug!("Remote branch '{}' does not exist in '{}'; deleting local branch", branch, repo.display());
-                        git::delete_local_branch(repo, &branch)?;
+                        git::safe_delete_local_branch(repo, &branch)?;
                         info!("Deleted local branch '{}' in '{}'", branch, repo.display());
                     }
                     Err(e) => {
@@ -102,7 +102,7 @@ pub fn sandbox_refresh() -> Result<()> {
                 io::stdout().flush().expect("Failed to flush stdout");
             }
             Err(e) => {
-                warn!("Error processing repo {}: {}", repo.display(), e);
+                warn!("Error processing repo {}: {}", repo.to_string_lossy().trim_end(), e);
             }
         }
     });
