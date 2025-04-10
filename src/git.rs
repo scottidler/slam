@@ -445,11 +445,10 @@ pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-
 /// Runs the pre-commit hooks with retries.
 ///
 /// The function accepts a `retries` parameter which specifies the maximum number
-/// of consecutive attempts (with identical exit code, stdout, and stderr) that are allowed
+/// of consecutive attempts (with identical exit code, stdout, and stderr) allowed
 /// before failing. In addition, the function will not retry more than MAX_RETRY times.
 ///
 /// # Parameters
@@ -463,6 +462,7 @@ pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
 /// - `Err` with a detailed message if the command repeatedly fails with identical output
 ///   (and exit code) for at least `retries` times, or if it exceeds MAX_RETRY attempts.
 pub fn run_pre_commit_with_retry(repo_path: &Path, retries: usize) -> Result<()> {
+    // Use owned types for exit code, stdout and stderr.
     let mut identical_count = 0;
     let mut previous_attempt: Option<(Option<i32>, String, String)> = None;
 
@@ -499,13 +499,14 @@ pub fn run_pre_commit_with_retry(repo_path: &Path, retries: usize) -> Result<()>
                         attempt, identical_count
                     );
                     if identical_count >= retries {
+                        let (last_exit, last_stdout, last_stderr) =
+                            previous_attempt.unwrap_or((None, String::new(), String::new()));
                         return Err(eyre!(
-                            "Pre-commit hook failed after {} attempts with identical output:\n\
-                             Exit code: {:?}\nstdout:\n{}\nstderr:\n{}",
+                            "Pre-commit hook failed after {} attempts with identical output:\nExit code: {:?}\nstdout:\n{}\nstderr:\n{}",
                             attempt,
-                            current_exit,
-                            current_stdout,
-                            current_stderr
+                            last_exit,
+                            last_stdout,
+                            last_stderr
                         ));
                     }
                 } else {
@@ -515,25 +516,18 @@ pub fn run_pre_commit_with_retry(repo_path: &Path, retries: usize) -> Result<()>
             } else {
                 debug!("This is the first recorded failure.");
             }
-            previous_attempt = Some((current_exit, current_stdout.clone(), current_stderr.clone()));
+            previous_attempt = Some((current_exit, current_stdout, current_stderr));
         }
     }
+    // If we exhaust all attempts, we know previous_attempt is Some.
+    let (last_exit, last_stdout, last_stderr) = previous_attempt
+        .unwrap_or((None, String::new(), String::new()));
     Err(eyre!(
-        "Pre-commit hook failed after {} attempts. Last failure:\n\
-         Exit code: {:?}\nstdout:\n{}\nstderr:\n{}",
+        "Pre-commit hook failed after {} attempts. Last failure:\nExit code: {:?}\nstdout:\n{}\nstderr:\n{}",
         MAX_RETRY,
-        previous_attempt
-            .as_ref()
-            .map(|(code, _, _)| code)
-            .unwrap_or(&None),
-        previous_attempt
-            .as_ref()
-            .map(|(_, stdout, _)| stdout)
-            .unwrap_or(&"".to_string()),
-        previous_attempt
-            .as_ref()
-            .map(|(_, _, stderr)| stderr)
-            .unwrap_or(&"".to_string())
+        last_exit,
+        last_stdout,
+        last_stderr
     ))
 }
 
