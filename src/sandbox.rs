@@ -34,7 +34,11 @@ pub fn refresh_repo(repo: &Path) -> Result<String> {
                         debug!("Remote branch '{}' exists in '{}'", branch, repo.display());
                     }
                     Ok(false) => {
-                        debug!("Remote branch '{}' does not exist in '{}'; deleting local branch", branch, repo.display());
+                        debug!(
+                            "Remote branch '{}' does not exist in '{}'; deleting local branch",
+                            branch,
+                            repo.display()
+                        );
                         git::safe_delete_local_branch(repo, &branch)?;
                         info!("Deleted local branch '{}' in '{}'", branch, repo.display());
                     }
@@ -54,14 +58,30 @@ pub fn refresh_repo(repo: &Path) -> Result<String> {
     debug!("Determined HEAD branch '{}' for repo '{}'", branch, repo.display());
     let branch_display = branch.magenta();
 
+    // Capture the SHA before updating
+    let sha_before = git::get_head_sha(repo)?;
+
+    // Reset any local changes and switch to HEAD
     git::reset_hard(repo)?;
     debug!("Completed hard reset for repo '{}'", repo.display());
 
     git::checkout(repo, &branch)?;
     debug!("Checked out branch '{}' in repo '{}'", branch, repo.display());
 
+    // Pull the latest
     git::pull(repo)?;
     debug!("Pulled latest changes for repo '{}'", repo.display());
+
+    // Capture the SHA after updating
+    let sha_after = git::get_head_sha(repo)?;
+
+    // Build a 7-character SHA display: bold green if it changed, dimmed grey if unchanged
+    let short_sha = &sha_after[..7];
+    let sha_display = if sha_before != sha_after {
+        short_sha.bold().green()
+    } else {
+        short_sha.dimmed()
+    };
 
     // Install pre-commit hooks if a configuration exists.
     let hook_status = if repo.join(".pre-commit-config.yaml").exists() {
@@ -83,7 +103,12 @@ pub fn refresh_repo(repo: &Path) -> Result<String> {
 
     let reposlug = git::get_repo_slug(repo)?;
     debug!("Returning status for repo '{}'", reposlug);
-    Ok(format!("{:>6} {} {}", branch_display, hook_status, reposlug))
+
+    // Insert `sha_display` between the branch name and the emoji
+    Ok(format!(
+        "{:>6} {} {} {}",
+        branch_display, sha_display, hook_status, reposlug
+    ))
 }
 
 /// Refreshes all repositories found in the current working directory.

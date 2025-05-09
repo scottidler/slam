@@ -955,6 +955,21 @@ pub fn list_local_branches_with_prefix(repo_path: &Path, prefix: &str) -> Result
     Ok(branches)
 }
 
+pub fn get_head_sha(repo_path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| eyre!("Failed to run git rev-parse HEAD: {}", e))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
