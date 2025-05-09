@@ -1,6 +1,6 @@
+use std::fs;
 use eyre::{eyre, Result};
 use log::{info, debug, warn, error};
-use std::fs::{read_to_string, write};
 use std::path::{Path, PathBuf};
 
 use crate::cli;
@@ -12,6 +12,7 @@ use crate::transaction;
 #[derive(Debug, Clone)]
 pub enum Change {
     Delete,
+    Add(String, String),
     Sub(String, String),
     Regex(String, String),
 }
@@ -81,22 +82,29 @@ impl Repo {
         }
     }
 
-    pub fn create_diff(&self, root: &Path, buffer: usize, commit: bool, simplified: bool) -> String {
+    /// Generate a diff for this repo+change.  If `commit` is true, any
+    /// filesystem mutations should already have been applied by process_file.
+    /// Generate a diff for this repo+change. If `commit` is true, file edits have been applied.
+    pub fn create_diff(
+        &self,
+        root: &Path,
+        buffer: usize,
+        commit: bool,
+        simplified: bool,
+    ) -> String {
         let repo_path = root.join(&self.reposlug);
         let mut file_diffs = String::new();
 
         if let Some(change) = self.change.as_ref() {
             match change {
                 Change::Delete => {
+                    // existing delete logic…
                     for file in &self.files {
                         let full_path = repo_path.join(file);
-                        debug!("Generating diff for file '{}' for deletion", full_path.display());
                         let mut file_diff = format!("{}\n", utils::indent(&format!("D {}", file), 2));
-                        match std::fs::read_to_string(&full_path) {
+                        match fs::read_to_string(&full_path) {
                             Ok(content) => {
-                                debug!("Original content length for '{}': {}", file, content.len());
                                 let diff = diff::generate_diff(&content, "", buffer);
-                                debug!("Diff output for deletion:\n{}", diff);
                                 for line in diff.lines() {
                                     file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                                 }
@@ -113,41 +121,45 @@ impl Repo {
                         }
                     }
                 }
-                _ => {
+
+                Change::Add(path, contents) => {
+                    // new Add logic: diff from empty → contents
+                    let mut file_diff = format!("{}\n", utils::indent(&format!("A {}", path), 2));
+                    let diff = diff::generate_diff("", contents, buffer);
+                    for line in diff.lines() {
+                        file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
+                    }
+                    if !file_diff.trim().is_empty() {
+                        file_diffs.push_str(&file_diff);
+                    }
+                }
+
+                Change::Sub(_, _) | Change::Regex(_, _) => {
+                    // existing substitution logic…
                     for file in &self.files {
                         let full_path = repo_path.join(file);
-                        debug!("Processing file '{}' for change", full_path.display());
-                        if let Some(diff) = process_file(&full_path, change, buffer, commit) {
-                            // Log raw diff for debugging.
-                            debug!("Raw diff for file '{}':\n{}", file, diff);
-                            let mut file_diff = if simplified {
-                                format!("{}\n", utils::indent(&format!(">< {}", file), 2))
-                            } else {
-                                format!("{}\n", utils::indent(&format!("M {}", file), 2))
-                            };
-                            for line in diff.lines() {
+                        if let Some(d) = process_file(&full_path, change, buffer, commit) {
+                            let prefix = if simplified { "><" } else { "M" };
+                            let mut file_diff = format!("{}\n", utils::indent(&format!("{} {}", prefix, file), 2));
+                            for line in d.lines() {
                                 file_diff.push_str(&format!("{}\n", utils::indent(line, 4)));
                             }
                             file_diffs.push_str(&file_diff);
-                        } else {
-                            debug!("No diff generated for file '{}'", file);
                         }
                     }
                 }
             }
         } else {
+            // no-change dry-run: list matched files
             for file in &self.files {
                 file_diffs.push_str(&format!("{}\n", utils::indent(&format!(">< {}", file), 2)));
             }
         }
 
         if file_diffs.trim().is_empty() {
-            debug!("No diff output for repo '{}'", self.reposlug);
-            "".to_string()
+            String::new()
         } else {
-            let final_diff = format!("{}\n{}", self.reposlug, file_diffs);
-            debug!("Final diff output for repo '{}':\n{}", self.reposlug, final_diff);
-            final_diff
+            format!("{}\n{}", self.reposlug, file_diffs)
         }
     }
 
@@ -453,40 +465,68 @@ fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) 
     match change {
         Change::Delete => {
             if commit {
-                let _ = std::fs::remove_file(full_path);
+                let _ = fs::remove_file(full_path);
             }
             None
-        },
+        }
+
+        Change::Add(_path, contents) => {
+            // ensure there's exactly one trailing newline
+            let mut file_contents = contents.clone();
+            if !file_contents.ends_with('\n') {
+                file_contents.push('\n');
+            }
+
+            // diff from empty → contents with trailing newline
+            let diff = diff::generate_diff("", &file_contents, buffer);
+
+            if commit {
+                // ensure parent dirs exist
+                if let Some(parent) = full_path.parent() {
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        eprintln!("failed to create directories for {}: {}", full_path.display(), e);
+                    }
+                }
+                // write the new file
+                if let Err(e) = fs::write(full_path, file_contents) {
+                    eprintln!("failed to write {}: {}", full_path.display(), e);
+                }
+            }
+
+            Some(diff)
+        }
+
         Change::Sub(pattern, replacement) => {
-            let content = read_to_string(full_path).ok()?;
+            let content = fs::read_to_string(full_path).ok()?;
             if !content.contains(pattern) {
                 return None;
             }
-            let updated_content = content.replace(pattern, replacement);
-            if updated_content == content {
+            let updated = content.replace(pattern, replacement);
+            if updated == content {
                 return None;
             }
-            let diff = diff::generate_diff(&content, &updated_content, buffer);
+            let diff = diff::generate_diff(&content, &updated, buffer);
             if commit {
-                let _ = write(full_path, &updated_content);
+                let _ = fs::write(full_path, &updated);
             }
             Some(diff)
-        },
+        }
+
         Change::Regex(pattern, replacement) => {
-            let content = read_to_string(full_path).ok()?;
+            let content = fs::read_to_string(full_path).ok()?;
             let regex = regex::Regex::new(pattern).ok()?;
             if !regex.is_match(&content) {
                 return None;
             }
-            let updated_content = regex.replace_all(&content, replacement).to_string();
-            if updated_content == content {
+            let updated = regex.replace_all(&content, replacement).to_string();
+            if updated == content {
                 return None;
             }
-            let diff = diff::generate_diff(&content, &updated_content, buffer);
+            let diff = diff::generate_diff(&content, &updated, buffer);
             if commit {
-                let _ = write(full_path, &updated_content);
+                let _ = fs::write(full_path, &updated);
             }
             Some(diff)
-        },
+        }
     }
 }
