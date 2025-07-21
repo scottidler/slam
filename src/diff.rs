@@ -125,3 +125,182 @@ pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
     result
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_diff_empty_updated() {
+        let original = "line1\nline2\nline3";
+        let updated = "";
+        let result = generate_diff(original, updated, 1);
+
+        // Should show all original lines as deletions (ignoring color codes)
+        assert!(result.contains("-   1"));
+        assert!(result.contains("-   2"));
+        assert!(result.contains("-   3"));
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+        assert!(result.contains("line3"));
+    }
+
+    #[test]
+    fn test_generate_diff_no_changes() {
+        let original = "line1\nline2\nline3";
+        let updated = "line1\nline2\nline3";
+        let result = generate_diff(original, updated, 1);
+
+        // When there are no changes, the diff should be empty
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_generate_diff_with_changes() {
+        let original = "line1\nline2\nline3";
+        let updated = "line1\nmodified_line2\nline3";
+        let result = generate_diff(original, updated, 1);
+
+        // Should show deletion and insertion (ignoring color codes)
+        assert!(result.contains("-   2"));
+        assert!(result.contains("+   2"));
+        assert!(result.contains("line2"));
+        assert!(result.contains("modified_line2"));
+    }
+
+    #[test]
+    fn test_generate_diff_empty_original() {
+        let original = "";
+        let updated = "new_line1\nnew_line2";
+        let result = generate_diff(original, updated, 1);
+
+        // Should show all lines as insertions (ignoring color codes)
+        assert!(result.contains("+   1"));
+        assert!(result.contains("+   2"));
+        assert!(result.contains("new_line1"));
+        assert!(result.contains("new_line2"));
+    }
+
+    #[test]
+    fn test_reconstruct_files_from_unified_diff_simple() {
+        let diff_text = r#"diff --git a/file1.txt b/file1.txt
+index 1234567..abcdefg 100644
+--- a/file1.txt
++++ b/file1.txt
+@@ -1,3 +1,3 @@
+ line1
+-old_line2
++new_line2
+ line3"#;
+
+        let result = reconstruct_files_from_unified_diff(diff_text);
+        assert_eq!(result.len(), 1);
+
+        let (filename, orig, upd) = &result[0];
+        assert_eq!(filename, "file1.txt");
+        assert_eq!(orig, "line1\nold_line2\nline3");
+        assert_eq!(upd, "line1\nnew_line2\nline3");
+    }
+
+    #[test]
+    fn test_reconstruct_files_from_unified_diff_multiple_files() {
+        let diff_text = r#"diff --git a/file1.txt b/file1.txt
+index 1234567..abcdefg 100644
+--- a/file1.txt
++++ b/file1.txt
+@@ -1,2 +1,2 @@
+ line1
+-old_line2
++new_line2
+diff --git a/file2.txt b/file2.txt
+index 2345678..bcdefgh 100644
+--- a/file2.txt
++++ b/file2.txt
+@@ -1,2 +1,2 @@
+ another_line1
+-another_old_line2
++another_new_line2"#;
+
+        let result = reconstruct_files_from_unified_diff(diff_text);
+        assert_eq!(result.len(), 2);
+
+        let (filename1, orig1, upd1) = &result[0];
+        assert_eq!(filename1, "file1.txt");
+        assert_eq!(orig1, "line1\nold_line2");
+        assert_eq!(upd1, "line1\nnew_line2");
+
+        let (filename2, orig2, upd2) = &result[1];
+        assert_eq!(filename2, "file2.txt");
+        assert_eq!(orig2, "another_line1\nanother_old_line2");
+        assert_eq!(upd2, "another_line1\nanother_new_line2");
+    }
+
+    #[test]
+    fn test_reconstruct_files_from_unified_diff_empty() {
+        let diff_text = "";
+        let result = reconstruct_files_from_unified_diff(diff_text);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_reconstruct_files_from_unified_diff_new_file() {
+        let diff_text = r#"diff --git a/newfile.txt b/newfile.txt
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/newfile.txt
+@@ -0,0 +1,2 @@
++new_line1
++new_line2"#;
+
+        let result = reconstruct_files_from_unified_diff(diff_text);
+        assert_eq!(result.len(), 1);
+
+        let (filename, orig, upd) = &result[0];
+        assert_eq!(filename, "newfile.txt");
+        assert_eq!(orig, "");
+        assert_eq!(upd, "new_line1\nnew_line2");
+    }
+
+    #[test]
+    fn test_reconstruct_files_from_unified_diff_deleted_file() {
+        let diff_text = r#"diff --git a/deletedfile.txt b/deletedfile.txt
+deleted file mode 100644
+index 1234567..0000000
+--- a/deletedfile.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-deleted_line1
+-deleted_line2"#;
+
+        let result = reconstruct_files_from_unified_diff(diff_text);
+        assert_eq!(result.len(), 1);
+
+        let (filename, orig, upd) = &result[0];
+        assert_eq!(filename, "deletedfile.txt");
+        assert_eq!(orig, "deleted_line1\ndeleted_line2");
+        assert_eq!(upd, "");
+    }
+
+    #[test]
+    fn test_reconstruct_files_from_unified_diff_context_lines() {
+        let diff_text = r#"diff --git a/file.txt b/file.txt
+index 1234567..abcdefg 100644
+--- a/file.txt
++++ b/file.txt
+@@ -2,5 +2,5 @@
+ context_line1
+ context_line2
+-old_line
++new_line
+ context_line3
+ context_line4"#;
+
+        let result = reconstruct_files_from_unified_diff(diff_text);
+        assert_eq!(result.len(), 1);
+
+        let (filename, orig, upd) = &result[0];
+        assert_eq!(filename, "file.txt");
+        assert_eq!(orig, "\ncontext_line1\ncontext_line2\nold_line\ncontext_line3\ncontext_line4");
+        assert_eq!(upd, "\ncontext_line1\ncontext_line2\nnew_line\ncontext_line3\ncontext_line4");
+    }
+}

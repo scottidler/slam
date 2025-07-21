@@ -1,35 +1,47 @@
-use std::{env, fs};
-use std::path::PathBuf;
-
-pub fn get_or_create_log_dir() -> PathBuf {
-    let dir = {
-        #[cfg(target_os = "macos")]
-        {
-            let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join("Library").join("Logs").join("slam")
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            if let Ok(xdg_state) = env::var("XDG_STATE_HOME") {
-                PathBuf::from(xdg_state).join("slam")
-            } else if let Ok(home) = env::var("HOME") {
-                PathBuf::from(home).join(".local").join("state").join("slam")
-            } else {
-                PathBuf::from("slam_logs")
-            }
-        }
-    };
-
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("Failed to create log directory {}: {}", dir.display(), e);
-    }
-    dir
-}
-
 pub fn indent(s: &str, indent: usize) -> String {
     let pad = " ".repeat(indent);
     s.lines()
       .map(|line| format!("{}{}", pad, line))
       .collect::<Vec<_>>()
       .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indent_single_line() {
+        let input = "hello world";
+        let result = indent(input, 4);
+        assert_eq!(result, "    hello world");
+    }
+
+    #[test]
+    fn test_indent_multiple_lines() {
+        let input = "line1\nline2\nline3";
+        let result = indent(input, 2);
+        assert_eq!(result, "  line1\n  line2\n  line3");
+    }
+
+    #[test]
+    fn test_indent_empty_string() {
+        let input = "";
+        let result = indent(input, 3);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_indent_zero_indent() {
+        let input = "no indent";
+        let result = indent(input, 0);
+        assert_eq!(result, "no indent");
+    }
+
+    #[test]
+    fn test_indent_with_empty_lines() {
+        let input = "line1\n\nline3";
+        let result = indent(input, 2);
+        assert_eq!(result, "  line1\n  \n  line3");
+    }
 }

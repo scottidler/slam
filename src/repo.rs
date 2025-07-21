@@ -530,3 +530,334 @@ fn process_file(full_path: &Path, change: &Change, buffer: usize, commit: bool) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_change_debug() {
+        let delete = Change::Delete;
+        let add = Change::Add("test.txt".to_string(), "content".to_string());
+        let sub = Change::Sub("old".to_string(), "new".to_string());
+        let regex = Change::Regex(r"\d+".to_string(), "X".to_string());
+
+        // Ensure Debug is implemented
+        assert!(!format!("{:?}", delete).is_empty());
+        assert!(!format!("{:?}", add).is_empty());
+        assert!(!format!("{:?}", sub).is_empty());
+        assert!(!format!("{:?}", regex).is_empty());
+    }
+
+    #[test]
+    fn test_change_clone() {
+        let original = Change::Add("test.txt".to_string(), "content".to_string());
+        let cloned = original.clone();
+
+        match (&original, &cloned) {
+            (Change::Add(path1, content1), Change::Add(path2, content2)) => {
+                assert_eq!(path1, path2);
+                assert_eq!(content1, content2);
+            }
+            _ => panic!("Clone failed"),
+        }
+    }
+
+    #[test]
+    fn test_repo_create_repo_from_remote_with_pr() {
+        let repo = Repo::create_repo_from_remote_with_pr(
+            "test-org/test-repo",
+            "SLAM-test",
+            123
+        );
+
+        assert_eq!(repo.reposlug, "test-org/test-repo");
+        assert_eq!(repo.change_id, "SLAM-test");
+        assert_eq!(repo.pr_number, 123);
+        assert!(repo.change.is_none());
+        assert!(repo.files.is_empty());
+    }
+
+    #[test]
+    fn test_repo_create_repo_from_local_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let repo_path = root.join("test-repo");
+        fs::create_dir_all(&repo_path).unwrap();
+
+        let change = Some(Change::Delete);
+        let file_ptns: Vec<String> = vec![];
+        let change_id = "test-change";
+
+        let result = Repo::create_repo_from_local(
+            &repo_path,
+            root,
+            &change,
+            &file_ptns,
+            change_id
+        );
+
+        assert!(result.is_some());
+        let repo = result.unwrap();
+        assert_eq!(repo.reposlug, "test-repo");
+        assert_eq!(repo.change_id, "test-change");
+        assert!(matches!(repo.change, Some(Change::Delete)));
+        assert!(repo.files.is_empty());
+        assert_eq!(repo.pr_number, 0);
+    }
+
+    #[test]
+    fn test_repo_create_repo_from_local_with_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let repo_path = root.join("test-repo");
+        fs::create_dir_all(&repo_path).unwrap();
+
+        // Create some test files
+        fs::write(repo_path.join("test1.txt"), "content1").unwrap();
+        fs::write(repo_path.join("test2.txt"), "content2").unwrap();
+        fs::write(repo_path.join("other.md"), "markdown").unwrap();
+
+        let change = None;
+        let file_ptns = vec!["*.txt".to_string()];
+        let change_id = "test-change";
+
+        let result = Repo::create_repo_from_local(
+            &repo_path,
+            root,
+            &change,
+            &file_ptns,
+            change_id
+        );
+
+        assert!(result.is_some());
+        let repo = result.unwrap();
+        assert_eq!(repo.files.len(), 2);
+        assert!(repo.files.contains(&"test1.txt".to_string()));
+        assert!(repo.files.contains(&"test2.txt".to_string()));
+        assert!(!repo.files.contains(&"other.md".to_string()));
+    }
+
+    #[test]
+    fn test_repo_create_repo_from_local_invalid_prefix() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let repo_path = PathBuf::from("/completely/different/path");
+
+        let change = None;
+        let file_ptns: Vec<String> = vec![];
+        let change_id = "test-change";
+
+        let result = Repo::create_repo_from_local(
+            &repo_path,
+            root,
+            &change,
+            &file_ptns,
+            change_id
+        );
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_files_in_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Create test files
+        fs::write(repo_path.join("file1.txt"), "content1").unwrap();
+        fs::write(repo_path.join("file2.txt"), "content2").unwrap();
+        fs::write(repo_path.join("file3.md"), "markdown").unwrap();
+
+        let result = find_files_in_repo(repo_path, "*.txt");
+        assert!(result.is_ok());
+
+        let files = result.unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|f| f.to_string_lossy() == "file1.txt"));
+        assert!(files.iter().any(|f| f.to_string_lossy() == "file2.txt"));
+    }
+
+    #[test]
+    fn test_process_file_delete_no_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "test content").unwrap();
+
+        let change = Change::Delete;
+        let result = process_file(&file_path, &change, 1, false);
+
+        assert!(result.is_none());
+        assert!(file_path.exists()); // File should still exist
+    }
+
+    #[test]
+    fn test_process_file_delete_with_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "test content").unwrap();
+
+        let change = Change::Delete;
+        let result = process_file(&file_path, &change, 1, true);
+
+        assert!(result.is_none());
+        assert!(!file_path.exists()); // File should be deleted
+    }
+
+    #[test]
+    fn test_process_file_add_no_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("new.txt");
+
+        let change = Change::Add("new.txt".to_string(), "new content".to_string());
+        let result = process_file(&file_path, &change, 1, false);
+
+        assert!(result.is_some());
+        let diff = result.unwrap();
+        assert!(diff.contains("new content"));
+        assert!(!file_path.exists()); // File should not be created
+    }
+
+    #[test]
+    fn test_process_file_add_with_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("new.txt");
+
+        let change = Change::Add("new.txt".to_string(), "new content".to_string());
+        let result = process_file(&file_path, &change, 1, true);
+
+        assert!(result.is_some());
+        assert!(file_path.exists()); // File should be created
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "new content\n"); // Should have trailing newline
+    }
+
+    #[test]
+    fn test_process_file_sub_no_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "original content").unwrap();
+
+        let change = Change::Sub("nonexistent".to_string(), "replacement".to_string());
+        let result = process_file(&file_path, &change, 1, false);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_process_file_sub_with_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "original content").unwrap();
+
+        let change = Change::Sub("original".to_string(), "modified".to_string());
+        let result = process_file(&file_path, &change, 1, false);
+
+        assert!(result.is_some());
+        let diff = result.unwrap();
+        assert!(diff.contains("original"));
+        assert!(diff.contains("modified"));
+    }
+
+    #[test]
+    fn test_process_file_regex_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "version 123").unwrap();
+
+        let change = Change::Regex(r"\d+".to_string(), "456".to_string());
+        let result = process_file(&file_path, &change, 1, false);
+
+        assert!(result.is_some());
+        let diff = result.unwrap();
+        assert!(diff.contains("123"));
+        assert!(diff.contains("456"));
+    }
+
+    #[test]
+    fn test_process_file_regex_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "test content").unwrap();
+
+        let change = Change::Regex("[invalid".to_string(), "replacement".to_string());
+        let result = process_file(&file_path, &change, 1, false);
+
+        assert!(result.is_none()); // Invalid regex should return None
+    }
+
+    #[test]
+    fn test_repo_create_diff_no_change() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        let repo = Repo {
+            reposlug: "test-repo".to_string(),
+            change_id: "test-change".to_string(),
+            change: None,
+            files: vec!["file1.txt".to_string(), "file2.txt".to_string()],
+            pr_number: 0,
+        };
+
+        let diff = repo.create_diff(root, 1, false, false);
+
+        assert!(diff.contains("test-repo"));
+        assert!(diff.contains(">< file1.txt"));
+        assert!(diff.contains(">< file2.txt"));
+    }
+
+    #[test]
+    fn test_repo_create_diff_add_change() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        let repo = Repo {
+            reposlug: "test-repo".to_string(),
+            change_id: "test-change".to_string(),
+            change: Some(Change::Add("new.txt".to_string(), "content".to_string())),
+            files: vec![],
+            pr_number: 0,
+        };
+
+        let diff = repo.create_diff(root, 1, false, false);
+
+        assert!(diff.contains("test-repo"));
+        assert!(diff.contains("A new.txt"));
+        assert!(diff.contains("content"));
+    }
+
+    #[test]
+    fn test_repo_get_review_diff_basic_format() {
+        let repo = Repo {
+            reposlug: "test-org/test-repo".to_string(),
+            change_id: "SLAM-test".to_string(),
+            change: None,
+            files: vec![],
+            pr_number: 123,
+        };
+
+        // This test checks the basic format without mocking git::get_pr_diff
+        // The actual diff fetching would be tested in integration tests
+        let diff = repo.get_review_diff(1);
+        assert!(diff.contains("test-org/test-repo (# 123)"));
+    }
+
+    #[test]
+    fn test_repo_debug() {
+        let repo = Repo {
+            reposlug: "test-repo".to_string(),
+            change_id: "test-change".to_string(),
+            change: Some(Change::Delete),
+            files: vec!["test.txt".to_string()],
+            pr_number: 42,
+        };
+
+        let debug_str = format!("{:?}", repo);
+        assert!(debug_str.contains("test-repo"));
+        assert!(debug_str.contains("test-change"));
+        assert!(debug_str.contains("Delete"));
+        assert!(debug_str.contains("42"));
+    }
+}

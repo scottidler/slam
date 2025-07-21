@@ -1,14 +1,7 @@
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-};
-
 use clap::{Parser, Subcommand};
 use chrono::Local;
 
-use crate::repo;
-use crate::utils;
+use crate::repo::Change;
 
 pub fn default_change_id() -> String {
     let now = Local::now();
@@ -26,46 +19,6 @@ fn validate_buffer(s: &str) -> Result<usize, String> {
                 Err(format!("Buffer must be between 1 and 3, but got {}", v))
             }
         })
-}
-
-pub fn get_cli_tool_status() -> String {
-    let success = "✅";
-    let failure = "❌";
-    let tools = [
-        ("git", &["--version"]),
-        ("gh", &["--version"]),
-        ("pre-commit", &["--version"]),
-    ];
-
-    let mut output_string = String::new();
-    output_string.push('\n');
-    for (tool, args) in &tools {
-        match Command::new(tool).args(*args).output() {
-            Ok(cmd_output) if cmd_output.status.success() => {
-                let stdout = String::from_utf8_lossy(&cmd_output.stdout);
-                let version = stdout.lines().next().unwrap_or("Unknown Version");
-                output_string.push_str(&format!("{} {}\n", success, version.trim()));
-            }
-            _ => {
-                output_string.push_str(&format!("{} {} (missing or broken)\n", failure, tool));
-            }
-        }
-    }
-
-    let log_dir: PathBuf = utils::get_or_create_log_dir();
-    let log_file = log_dir.join("slam.log");
-    let log_status = if log_dir.exists() && log_dir.is_dir() {
-        match fs::OpenOptions::new().create(true).append(true).open(&log_file) {
-            Ok(_) => format!("{} {} (writable)\n", success, log_dir.display()),
-            Err(_) => format!("{} {} (!writable)\n", failure, log_dir.display()),
-        }
-    } else {
-        format!("{} {} (not found)\n", failure, log_dir.display())
-    };
-
-    output_string.push_str(&log_status);
-    output_string.push('\n');
-    output_string
 }
 
 #[derive(Parser, Debug)]
@@ -241,12 +194,12 @@ pub enum CreateAction {
 }
 
 impl CreateAction {
-    pub fn decompose(self) -> (repo::Change, Option<String>, bool) {
+    pub fn decompose(self) -> (Change, Option<String>, bool) {
         match self {
-            CreateAction::Delete { commit, simplified } => (repo::Change::Delete, commit, simplified),
-            CreateAction::Add { path, content, commit, simplified } => (repo::Change::Add(path, content), commit, simplified),
-            CreateAction::Sub { ptn, repl, commit, simplified } => (repo::Change::Sub(ptn, repl), commit, simplified),
-            CreateAction::Regex { ptn, repl, commit, simplified } => (repo::Change::Regex(ptn, repl), commit, simplified),
+            CreateAction::Delete { commit, simplified } => (Change::Delete, commit, simplified),
+            CreateAction::Add { path, content, commit, simplified } => (Change::Add(path, content), commit, simplified),
+            CreateAction::Sub { ptn, repl, commit, simplified } => (Change::Sub(ptn, repl), commit, simplified),
+            CreateAction::Regex { ptn, repl, commit, simplified } => (Change::Regex(ptn, repl), commit, simplified),
         }
     }
 }
@@ -318,4 +271,162 @@ pub enum SandboxAction {
     Setup {},
     /// Refresh sandbox by resetting and pulling repositories
     Refresh {},
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_change_id_format() {
+        let change_id = default_change_id();
+        assert!(change_id.starts_with("SLAM-"));
+
+        // Should be in format SLAM-YYYY-MM-DDTHH-MM-SS
+        let timestamp_part = change_id.strip_prefix("SLAM-").unwrap();
+        assert_eq!(timestamp_part.len(), 19); // YYYY-MM-DDTHH-MM-SS
+        assert_eq!(timestamp_part.chars().nth(4), Some('-'));
+        assert_eq!(timestamp_part.chars().nth(7), Some('-'));
+        assert_eq!(timestamp_part.chars().nth(10), Some('T'));
+        assert_eq!(timestamp_part.chars().nth(13), Some('-'));
+        assert_eq!(timestamp_part.chars().nth(16), Some('-'));
+    }
+
+    #[test]
+    fn test_default_change_id_uniqueness() {
+        let id1 = default_change_id();
+        std::thread::sleep(std::time::Duration::from_millis(1001)); // Ensure different second
+        let id2 = default_change_id();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_validate_buffer_valid_values() {
+        assert_eq!(validate_buffer("1"), Ok(1));
+        assert_eq!(validate_buffer("2"), Ok(2));
+        assert_eq!(validate_buffer("3"), Ok(3));
+    }
+
+    #[test]
+    fn test_validate_buffer_invalid_values() {
+        assert!(validate_buffer("0").is_err());
+        assert!(validate_buffer("4").is_err());
+        assert!(validate_buffer("-1").is_err());
+        assert!(validate_buffer("abc").is_err());
+        assert!(validate_buffer("").is_err());
+    }
+
+    #[test]
+    fn test_validate_buffer_error_messages() {
+        let err = validate_buffer("abc").unwrap_err();
+        assert!(err.contains("isn't a valid number"));
+
+        let err = validate_buffer("0").unwrap_err();
+        assert!(err.contains("Buffer must be between 1 and 3"));
+
+        let err = validate_buffer("4").unwrap_err();
+        assert!(err.contains("Buffer must be between 1 and 3"));
+    }
+
+    #[test]
+    fn test_create_action_decompose_delete() {
+        let action = CreateAction::Delete {
+            commit: Some("test commit".to_string()),
+            simplified: true,
+        };
+
+        let (change, commit, simplified) = action.decompose();
+        assert!(matches!(change, Change::Delete));
+        assert_eq!(commit, Some("test commit".to_string()));
+        assert!(simplified);
+    }
+
+    #[test]
+    fn test_create_action_decompose_add() {
+        let action = CreateAction::Add {
+            path: "test.txt".to_string(),
+            content: "test content".to_string(),
+            commit: None,
+            simplified: false,
+        };
+
+        let (change, commit, simplified) = action.decompose();
+        assert!(matches!(change, Change::Add(path, content) if path == "test.txt" && content == "test content"));
+        assert_eq!(commit, None);
+        assert!(!simplified);
+    }
+
+    #[test]
+    fn test_create_action_decompose_sub() {
+        let action = CreateAction::Sub {
+            ptn: "old".to_string(),
+            repl: "new".to_string(),
+            commit: Some("sub commit".to_string()),
+            simplified: false,
+        };
+
+        let (change, commit, simplified) = action.decompose();
+        assert!(matches!(change, Change::Sub(ptn, repl) if ptn == "old" && repl == "new"));
+        assert_eq!(commit, Some("sub commit".to_string()));
+        assert!(!simplified);
+    }
+
+    #[test]
+    fn test_create_action_decompose_regex() {
+        let action = CreateAction::Regex {
+            ptn: "foo".to_string(),
+            repl: "bar".to_string(),
+            commit: Some("regex commit".to_string()),
+            simplified: true,
+        };
+
+        let (change, commit, simplified) = action.decompose();
+        assert!(matches!(change, Change::Regex(ptn, repl) if ptn == "foo" && repl == "bar"));
+        assert_eq!(commit, Some("regex commit".to_string()));
+        assert!(simplified);
+    }
+
+    // Note: Testing CLI parsing would require integration tests with clap
+    // since the Parser derive macro generates the parsing logic
+
+    #[test]
+    fn test_sandbox_action_debug() {
+        let setup = SandboxAction::Setup {};
+        let refresh = SandboxAction::Refresh {};
+
+        // Ensure Debug is implemented
+        assert!(!format!("{:?}", setup).is_empty());
+        assert!(!format!("{:?}", refresh).is_empty());
+    }
+
+    #[test]
+    fn test_review_action_debug() {
+        let ls = ReviewAction::Ls {
+            change_id_ptns: vec!["SLAM-test".to_string()],
+            buffer: 2,
+        };
+
+        let clone = ReviewAction::Clone {
+            change_id: "SLAM-test".to_string(),
+            all: true,
+        };
+
+        let approve = ReviewAction::Approve {
+            change_id: "SLAM-test".to_string(),
+            admin_override: false,
+        };
+
+        let delete = ReviewAction::Delete {
+            change_id: "SLAM-test".to_string(),
+        };
+
+        let purge = ReviewAction::Purge {};
+
+        // Ensure Debug is implemented for all variants
+        assert!(!format!("{:?}", ls).is_empty());
+        assert!(!format!("{:?}", clone).is_empty());
+        assert!(!format!("{:?}", approve).is_empty());
+        assert!(!format!("{:?}", delete).is_empty());
+        assert!(!format!("{:?}", purge).is_empty());
+    }
 }

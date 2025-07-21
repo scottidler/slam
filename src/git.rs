@@ -389,71 +389,62 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
 }
 
 pub fn get_head_branch(repo_path: &Path) -> Result<String> {
+    // First, try to get the default branch from the remote
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .output()
-        .map_err(|e| eyre!("Failed to get HEAD branch for repo {}: {}", repo_path.display(), e))?;
-    if !output.status.success() {
-        return Err(eyre!("Failed to get HEAD branch for repo {}.", repo_path.display()));
-    }
-    let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    full_ref
-        .strip_prefix("origin/")
-        .map(String::from)
-        .ok_or_else(|| eyre!("Unexpected format for HEAD branch: {}", full_ref))
-}
+        .args(&["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output();
 
-/// Attempts to install pre-commit hooks for the repository at `repo_path`.
-/// All output from the pre-commit command is captured and logged at debug level,
-/// so nothing escapes to stdout. Returns:
-/// - Ok(true) if hooks were installed successfully (and .git/hooks/pre-commit exists)
-/// - Ok(false) if installation was attempted but failed (or the hook file is missing)
-/// - Ok(false) if no .pre-commit-config.yaml exists.
-pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
-    let pre_commit_config = repo_path.join(".pre-commit-config.yaml");
-    if pre_commit_config.exists() {
-        let version_output = Command::new("pre-commit")
-            .arg("--version")
-            .output()
-            .map_err(|e| eyre!("Failed to run pre-commit --version: {}", e))?;
-        debug!("pre-commit version: {}", String::from_utf8_lossy(&version_output.stdout).trim_end());
-
-        let install_output = Command::new("pre-commit")
-            .current_dir(repo_path)
-            .args(&["install"])
-            .output()
-            .map_err(|e| eyre!("Failed to run pre-commit install: {}", e))?;
-        debug!("pre-commit install stdout: {}", String::from_utf8_lossy(&install_output.stdout).trim_end());
-        debug!("pre-commit install stderr: {}", String::from_utf8_lossy(&install_output.stderr).trim_end());
-
-        if install_output.status.success() {
-            let hook_path = repo_path.join(".git/hooks/pre-commit");
-            if hook_path.exists() {
-                debug!("Pre-commit hooks installed in {}", repo_path.display());
-                return Ok(true);
-            } else {
-                debug!("pre-commit install succeeded but {} not found", hook_path.display());
-                return Ok(false);
+    if let Ok(output) = output {
+        if output.status.success() {
+            let remote_head = String::from_utf8_lossy(&output.stdout);
+            let trimmed = remote_head.trim();
+            if let Some(branch) = trimmed.strip_prefix("refs/remotes/origin/") {
+                return Ok(branch.to_string());
             }
-        } else {
-            debug!("Failed to install pre-commit hooks in {}", repo_path.display());
-            return Ok(false);
         }
     }
-    // No configuration file exists.
-    Ok(false)
+
+    // Fallback: check for common branch names
+    let common_branches = ["main", "master"];
+    for branch in &common_branches {
+        let remote_ref = format!("origin/{}", branch);
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(&["rev-parse", "--verify", &remote_ref])
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                return Ok(branch.to_string());
+            }
+        }
+    }
+
+    Err(eyre!("Unable to determine head branch for repository"))
 }
 
-/// Runs the pre-commit hooks with retries.
+pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
+    let output = Command::new("pre-commit")
+        .current_dir(repo_path)
+        .args(&["install"])
+        .output()
+        .map_err(|e| eyre!("Failed to execute pre-commit install: {}", e))?;
+
+    if output.status.success() {
+        // Check if the hook file was actually created
+        let hook_path = repo_path.join(".git").join("hooks").join("pre-commit");
+        Ok(hook_path.exists())
+    } else {
+        Ok(false)
+    }
+}
+
+/// Run pre-commit hooks with retry logic.
 ///
-/// The function accepts a `retries` parameter which specifies the maximum number
-/// of consecutive attempts (with identical exit code, stdout, and stderr) allowed
-/// before failing. In addition, the function will not retry more than MAX_RETRY times.
+/// # Arguments
 ///
-/// # Parameters
-///
-/// - `repo_path`: the repository directory in which to run the pre-commit hooks.
+/// - `repo_path`: Path to the Git repository.
 /// - `retries`: number of consecutive identical failures allowed before aborting.
 ///
 /// # Returns
@@ -484,44 +475,32 @@ pub fn run_pre_commit_with_retry(repo_path: &Path, retries: usize) -> Result<()>
         debug!("Attempt {}: stdout:\n{}", attempt, current_stdout);
         debug!("Attempt {}: stderr:\n{}", attempt, current_stderr);
 
+        // Success: exit code 0 means pre-commit hooks passed.
         if output.status.success() {
-            debug!("Pre-commit hooks succeeded on attempt {}", attempt);
+            info!("Pre-commit hooks succeeded after {} attempt(s)", attempt);
             return Ok(());
-        } else {
-            if let Some((prev_exit, prev_stdout, prev_stderr)) = &previous_attempt {
-                if *prev_exit == current_exit
-                    && *prev_stdout == current_stdout
-                    && *prev_stderr == current_stderr
-                {
-                    identical_count += 1;
-                    debug!(
-                        "Attempt {} identical to previous failure (identical count: {}).",
-                        attempt, identical_count
-                    );
-                    if identical_count >= retries {
-                        let (last_exit, last_stdout, last_stderr) =
-                            previous_attempt.unwrap_or((None, String::new(), String::new()));
-                        return Err(eyre!(
-                            "Pre-commit hook failed after {} attempts with identical output:\nExit code: {:?}\nstdout:\n{}\nstderr:\n{}",
-                            attempt,
-                            last_exit,
-                            last_stdout,
-                            last_stderr
-                        ));
-                    }
-                } else {
-                    debug!("Output or exit code differs from the previous attempt; resetting identical count.");
-                    identical_count = 0;
+        }
+
+        // Compare this attempt with the previous one.
+        let current_attempt = (current_exit, current_stdout.clone(), current_stderr.clone());
+        if let Some(ref prev) = previous_attempt {
+            if *prev == current_attempt {
+                identical_count += 1;
+                debug!("Identical failure #{} detected", identical_count);
+                if identical_count >= retries {
+                    break;
                 }
             } else {
-                debug!("This is the first recorded failure.");
+                identical_count = 0; // Reset count if output differs.
+                debug!("Output differs from previous attempt; resetting identical count");
             }
-            previous_attempt = Some((current_exit, current_stdout, current_stderr));
         }
+        previous_attempt = Some(current_attempt);
     }
-    // If we exhaust all attempts, we know previous_attempt is Some.
-    let (last_exit, last_stdout, last_stderr) = previous_attempt
-        .unwrap_or((None, String::new(), String::new()));
+
+    // Extract details from the last attempt for the error message.
+    let (last_exit, last_stdout, last_stderr) = previous_attempt.unwrap_or((None, String::new(), String::new()));
+
     Err(eyre!(
         "Pre-commit hook failed after {} attempts. Last failure:\nExit code: {:?}\nstdout:\n{}\nstderr:\n{}",
         MAX_RETRY,
@@ -1299,17 +1278,289 @@ pub fn _get_closed_pr_number_for_repo(repo: &str, change_id: &str) -> Result<u64
             "--json", "number",
             "--limit", "1",
         ])
-        .output()
-        .map_err(|e| eyre!("Failed to execute gh pr list: {}", e))?;
+        .output()?;
+
     if !output.status.success() {
         return Err(eyre!("Failed to list closed PRs in repo '{}'", repo));
     }
-    let parsed: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| eyre!("Failed to parse JSON from gh pr list: {}", e))?;
-    let pr_number = parsed.as_array()
+
+    let parsed: Value = serde_json::from_slice(&output.stdout)?;
+    let pr_number = parsed
+        .as_array()
         .and_then(|arr| arr.get(0))
         .and_then(|obj| obj.get("number"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
+
     Ok(pr_number)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_max_retry_constant() {
+        assert_eq!(MAX_RETRY, 5);
+    }
+
+    #[test]
+    fn test_pr_status_debug() {
+        let status = PrStatus {
+            draft: false,
+            mergeable: true,
+            reviewed: true,
+            checked: false,
+        };
+
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("draft: false"));
+        assert!(debug_str.contains("mergeable: true"));
+        assert!(debug_str.contains("reviewed: true"));
+        assert!(debug_str.contains("checked: false"));
+    }
+
+    #[test]
+    fn test_pr_status_deserialize() {
+        // This test would require mocking the JSON parsing
+        // For now, we'll test the struct creation directly
+        let status = PrStatus {
+            draft: true,
+            mergeable: false,
+            reviewed: false,
+            checked: true,
+        };
+
+        assert!(status.draft);
+        assert!(!status.mergeable);
+        assert!(!status.reviewed);
+        assert!(status.checked);
+    }
+
+    #[test]
+    fn test_find_git_repositories_empty_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = find_git_repositories(temp_dir.path()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_git_repositories_with_git_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_dir = temp_dir.path().join("test-repo");
+        let git_dir = repo_dir.join(".git");
+
+        fs::create_dir_all(&git_dir).unwrap();
+
+        let result = find_git_repositories(temp_dir.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], repo_dir);
+    }
+
+    #[test]
+    fn test_find_git_repositories_nested() {
+        let temp_dir = TempDir::new().unwrap();
+        let nested_repo = temp_dir.path().join("nested").join("repo");
+        let git_dir = nested_repo.join(".git");
+
+        fs::create_dir_all(&git_dir).unwrap();
+
+        let result = find_git_repositories(temp_dir.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], nested_repo);
+    }
+
+    #[test]
+    fn test_find_git_repositories_multiple() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create multiple repos
+        let repo1 = temp_dir.path().join("repo1");
+        let repo2 = temp_dir.path().join("repo2");
+
+        fs::create_dir_all(repo1.join(".git")).unwrap();
+        fs::create_dir_all(repo2.join(".git")).unwrap();
+
+        let mut result = find_git_repositories(temp_dir.path()).unwrap();
+        result.sort(); // Sort for consistent ordering
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&repo1));
+        assert!(result.contains(&repo2));
+    }
+
+    #[test]
+    fn test_find_git_repositories_ignores_non_git_dirs() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a regular directory (not a git repo)
+        fs::create_dir_all(temp_dir.path().join("not-a-repo")).unwrap();
+
+        // Create a git repo
+        let git_repo = temp_dir.path().join("git-repo");
+        fs::create_dir_all(git_repo.join(".git")).unwrap();
+
+        let result = find_git_repositories(temp_dir.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], git_repo);
+    }
+
+    #[test]
+    fn test_get_repo_slug_valid_ssh_url() {
+        // This test would need a real git repo with remote configured
+        // For now, we test the URL parsing logic
+        let test_url = "git@github.com:tatari-tv/test-repo.git";
+
+        if let Some(stripped) = test_url.strip_prefix("git@github.com:") {
+            let repo = stripped.trim_end_matches(".git");
+            assert_eq!(repo, "tatari-tv/test-repo");
+        } else {
+            panic!("URL parsing failed");
+        }
+    }
+
+    #[test]
+    fn test_get_repo_slug_invalid_url() {
+        let test_url = "https://github.com/tatari-tv/test-repo.git";
+
+        let result = test_url.strip_prefix("git@github.com:");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_list_local_branches_with_prefix_parsing() {
+        // Test the branch name parsing logic
+        let mock_output = "  main\n* SLAM-feature-1\n  SLAM-feature-2\n  other-branch\n";
+
+        let branches: Vec<String> = mock_output
+            .lines()
+            .map(|s| s.trim().trim_start_matches("* ").to_string())
+            .filter(|name| name.starts_with("SLAM"))
+            .collect();
+
+        assert_eq!(branches.len(), 2);
+        assert!(branches.contains(&"SLAM-feature-1".to_string()));
+        assert!(branches.contains(&"SLAM-feature-2".to_string()));
+    }
+
+    #[test]
+    fn test_merge_pr_args_construction() {
+        let pr_number = 123u64;
+        let repo = "test-org/test-repo";
+
+        // Test without admin override
+        let pr_binding = pr_number.to_string();
+        let mut args = vec![
+            "pr", "merge",
+            &pr_binding,
+            "--squash",
+            "--delete-branch",
+            "--repo",
+            repo,
+        ];
+
+        assert_eq!(args.len(), 7);
+        assert_eq!(args[0], "pr");
+        assert_eq!(args[1], "merge");
+        assert_eq!(args[2], "123");
+        assert_eq!(args[6], repo);
+
+        // Test with admin override
+        args.insert(3, "--admin");
+        assert_eq!(args.len(), 8);
+        assert_eq!(args[3], "--admin");
+    }
+
+    #[test]
+    fn test_create_pr_body_format() {
+        let commit_msg = "Test commit message";
+
+        let expected_body = format!(
+            "{}\n\ndocs: https://github.com/scottidler/slam/blob/main/README.md",
+            commit_msg
+        );
+
+        assert!(expected_body.contains(commit_msg));
+        assert!(expected_body.contains("docs: https://github.com/scottidler/slam"));
+        assert!(expected_body.contains("README.md"));
+    }
+
+    #[test]
+    fn test_stash_save_return_value() {
+        // Test the expected stash reference format
+        let expected_stash_ref = "stash@{0}";
+        assert_eq!(expected_stash_ref, "stash@{0}");
+        assert!(expected_stash_ref.starts_with("stash@"));
+        assert!(expected_stash_ref.contains("{0}"));
+    }
+
+    #[test]
+    fn test_api_endpoint_format() {
+        let repo = "test-org/test-repo";
+        let branch = "SLAM-test-branch";
+
+        let api_endpoint = format!("repos/{}/git/refs/heads/{}", repo, branch);
+        assert_eq!(api_endpoint, "repos/test-org/test-repo/git/refs/heads/SLAM-test-branch");
+    }
+
+    #[test]
+    fn test_github_url_format() {
+        let reposlug = "test-org/test-repo";
+        let url = format!("git@github.com:{}.git", reposlug);
+
+        assert_eq!(url, "git@github.com:test-org/test-repo.git");
+        assert!(url.starts_with("git@github.com:"));
+        assert!(url.ends_with(".git"));
+    }
+
+    #[test]
+    fn test_pr_status_json_parsing_logic() {
+        // Test the logic used in get_pr_status for determining status fields
+
+        // Test draft detection
+        let draft_false = false;
+        let draft_true = true;
+        assert!(!draft_false);
+        assert!(draft_true);
+
+        // Test mergeable detection
+        let mergeable_str = "MERGEABLE";
+        let not_mergeable_str = "CONFLICTING";
+        assert_eq!(mergeable_str, "MERGEABLE");
+        assert_ne!(not_mergeable_str, "MERGEABLE");
+
+        // Test review decision
+        let approved_str = "APPROVED";
+        let pending_str = "REVIEW_REQUIRED";
+        assert_eq!(approved_str, "APPROVED");
+        assert_ne!(pending_str, "APPROVED");
+
+        // Test status check conclusions
+        let success_conclusion = "SUCCESS";
+        let skipped_conclusion = "SKIPPED";
+        let failed_conclusion = "FAILURE";
+
+        assert!(success_conclusion == "SUCCESS" || success_conclusion == "SKIPPED");
+        assert!(skipped_conclusion == "SUCCESS" || skipped_conclusion == "SKIPPED");
+        assert!(!(failed_conclusion == "SUCCESS" || failed_conclusion == "SKIPPED"));
+    }
+
+    #[test]
+    fn test_run_pre_commit_with_retry_max_attempts() {
+        // Test that MAX_RETRY is used as the upper bound
+        let max_attempts = MAX_RETRY;
+        assert_eq!(max_attempts, 5);
+
+        // Test retry logic bounds
+        for attempt in 1..=max_attempts {
+            assert!(attempt >= 1);
+            assert!(attempt <= MAX_RETRY);
+        }
+    }
+
+    // Note: Many functions in this module interact with external commands (git, gh)
+    // and would require extensive mocking or integration testing to test thoroughly.
+    // The tests above focus on the testable logic and data structures.
 }

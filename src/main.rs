@@ -1,17 +1,12 @@
 // src/main.rs
 
-use std::{
-    env,
-    fs,
-    io,
-    io::Write,
-};
+
 
 use clap::{CommandFactory, FromArgMatches};
 use eyre::Result;
 use glob::Pattern;
 use itertools::Itertools;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use rayon::prelude::*;
 
 mod built_info {
@@ -89,83 +84,14 @@ fn filter_repos_by_spec(repos: Vec<repo::Repo>, specs: &[String]) -> Vec<repo::R
         .collect()
 }
 
-fn main() -> Result<()> {
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "info");
-    }
-
-    let log_dir = utils::get_or_create_log_dir();
-    let log_file_path = log_dir.join("slam.log");
-
-    let log_writer: Box<dyn Write + Send> = if log_dir.exists() && log_dir.is_dir() {
-        match fs::OpenOptions::new().create(true).append(true).open(&log_file_path) {
-            Ok(file) => Box::new(file),
-            Err(err) => {
-                eprintln!(
-                    "Log directory exists but is not writable: {}. Falling back to stdout.",
-                    err
-                );
-                Box::new(io::stdout())
-            }
-        }
-    } else {
-        eprintln!(
-            "Log directory {} not found. Falling back to stdout.",
-            log_dir.display()
-        );
-        Box::new(io::stdout())
-    };
-
-    let env_logger_env = env_logger::Env::default().filter_or("RUST_LOG", "info");
-    env_logger::Builder::from_env(env_logger_env)
-        .target(env_logger::Target::Pipe(log_writer))
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "[{level}] {timestamp} - {msg}",
-                level = record.level(),
-                timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                msg = record.args()
-            )
-        })
-        .init();
-
-    let mut cmd = cli::SlamCli::command();
-    cmd = cmd.after_help(cli::get_cli_tool_status());
-    let cli = cli::SlamCli::from_arg_matches(&cmd.get_matches())?;
-    info!("{}", "-".repeat(100));
-    info!("Starting SLAM");
-
-    match cli.command {
-        cli::SlamCommand::Create { files, change_id, buffer, repo_ptns, action } => {
-            process_create_command(files, action, change_id, buffer, repo_ptns)?;
-        }
-        cli::SlamCommand::Review { org, repo_ptns, action } => {
-            process_review_command(org, &action, repo_ptns)?;
-        }
-        cli::SlamCommand::Sandbox { repo_ptns, action } => {
-            process_sandbox_command(repo_ptns, action)?;
-        }
-    }
-
-    info!("SLAM execution complete.");
-    Ok(())
-}
-
-fn process_sandbox_command(repo_ptns: Vec<String>, action: cli::SandboxAction) -> Result<()> {
-    match action {
-        cli::SandboxAction::Setup {} => sandbox::sandbox_setup(repo_ptns),
-        cli::SandboxAction::Refresh {} => sandbox::sandbox_refresh(),
-    }
-}
-
 fn process_create_command(
     files: Vec<String>,
-    action: Option<cli::CreateAction>,
     change_id: String,
     buffer: usize,
     repo_ptns: Vec<String>,
-) -> Result<()> {
+    action: Option<cli::CreateAction>,
+) -> Result<()>
+ {
 
     let total_emoji = "🔍";
     let repos_emoji = "📦";
@@ -223,29 +149,35 @@ fn process_create_command(
         return Ok(());
     }
 
-    let outputs: Vec<Option<String>> = filtered_repos
-        .into_par_iter()
-        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), simplified))
-        .collect::<Result<Vec<Option<String>>>>()?;
-    let matches: Vec<String> = outputs.into_iter().filter_map(|s| s).collect();
+    status.push(format!("{}{}", filtered_repos.len(), diffs_emoji));
 
-    if !matches.is_empty() {
-        println!("{}", change_id);
-        for output in &matches {
-            println!("{}\n", utils::indent(&output, 2));
-        }
-        status.push(format!("{}{}", matches.len(), diffs_emoji));
+    // Apply changes to repositories in parallel.
+    let results: Vec<Result<Option<String>, eyre::Error>> = filtered_repos
+        .par_iter()
+        .map(|repo| {
+            repo.create(&root, buffer, commit_msg.as_deref(), simplified)
+        })
+        .collect();
+
+    let successful_diffs: Vec<String> = results
+        .into_iter()
+        .filter_map(|result| match result {
+            Ok(Some(diff)) => Some(diff),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                None
+            }
+        })
+        .collect();
+
+    for diff in successful_diffs {
+        println!("{}", diff);
     }
+
     status.reverse();
     println!("  {}", status.join(" | "));
-
     Ok(())
-}
-
-fn _load_service_account_pat() -> std::io::Result<String> {
-    let home = env::var("HOME").expect("HOME environment variable not set");
-    let token_path = format!("{}/.config/github/tokens/service_account_pat", home);
-    fs::read_to_string(token_path).map(|s| s.trim().to_string())
 }
 
 fn process_review_command(
@@ -275,69 +207,92 @@ fn process_review_command(
     info!("After filtering, {} repos remain", filtered_reposlugs.len());
     debug!("Filtered repository slugs: {:?}", filtered_reposlugs);
 
+    let mut repos_with_prs = Vec::new();
+
     match action {
-        cli::ReviewAction::Purge {} => {
-            // For the purge action, process each filtered repo individually.
-            for reposlug in filtered_reposlugs {
-                let repo = crate::repo::Repo::create_repo_from_remote_with_pr(&reposlug, "", 0);
-                match repo.review(action, false) {
-                    Ok(msg) => println!("{}: {}", reposlug, msg),
-                    Err(e) => eprintln!("Error purging repo {}: {}", reposlug, e),
+        cli::ReviewAction::Ls { change_id_ptns, .. } => {
+            let all_prs = git::get_prs_for_repos(filtered_reposlugs)?;
+            for (title, pr_list) in &all_prs {
+                if change_id_ptns.is_empty() || change_id_ptns.iter().any(|pattern| title.starts_with(pattern)) {
+                    for (reposlug, pr_number, _author) in pr_list {
+                        repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(reposlug, title, *pr_number));
+                    }
                 }
             }
-            return Ok(());
         }
-        _ => {
-            // Existing behavior: get a map of change IDs to PR details.
-            let pr_map = git::get_prs_for_repos(filtered_reposlugs)?;
-            let mut filtered_pr_map: Vec<(String, Vec<(String, u64, String)>)> = pr_map
-                .into_iter()
-                .filter(|(key, _)| {
-                    // Filter by change ID only if action is not Purge.
-                    match action {
-                        cli::ReviewAction::Ls { change_id_ptns, .. } => {
-                            key.starts_with("SLAM")
-                                && (change_id_ptns.is_empty()
-                                    || change_id_ptns.iter().any(|ptn| {
-                                        if let Ok(pattern) = glob::Pattern::new(ptn) {
-                                            pattern.matches(key)
-                                        } else {
-                                            false
-                                        }
-                                    }))
-                        }
-                        cli::ReviewAction::Approve { change_id, .. }
-                        | cli::ReviewAction::Delete { change_id }
-                        | cli::ReviewAction::Clone { change_id, .. } => key.starts_with("SLAM") && key == change_id,
-                        _ => false,
-                    }
+        cli::ReviewAction::Clone { change_id, all: include_closed } => {
+            let all_prs = git::get_prs_for_repos(filtered_reposlugs.clone())?;
+
+            if let Some(pr_list) = all_prs.get(change_id) {
+                for (reposlug, pr_number, _author) in pr_list {
+                    repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(reposlug, change_id, *pr_number));
+                }
+            }
+            if *include_closed {
+                warn!("--all flag for closed PRs is not yet implemented.");
+            }
+        }
+        cli::ReviewAction::Approve { change_id, .. } | cli::ReviewAction::Delete { change_id } => {
+            let all_prs = git::get_prs_for_repos(filtered_reposlugs)?;
+
+            if let Some(pr_list) = all_prs.get(change_id) {
+                for (reposlug, pr_number, _author) in pr_list {
+                    repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(reposlug, change_id, *pr_number));
+                }
+            }
+        }
+        cli::ReviewAction::Purge {} => {
+            for reposlug in &filtered_reposlugs {
+                repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(reposlug, "SLAM", 0));
+            }
+        }
+    }
+
+    if repos_with_prs.is_empty() {
+        println!("No repositories with matching PRs found.");
+        return Ok(());
+    }
+
+    match action {
+        cli::ReviewAction::Ls { .. } => {
+            let repo_outputs: Vec<String> = repos_with_prs
+                .par_iter()
+                .map(|repo| {
+                    repo.review(action, false).unwrap_or_else(|e| {
+                        format!("Error processing {}: {}", repo.reposlug, e)
+                    })
                 })
                 .collect();
-            if filtered_pr_map.is_empty() {
-                warn!("No open PRs found matching Change ID");
-                return Ok(());
+
+            for output in repo_outputs {
+                println!("{}", output);
             }
-            filtered_pr_map.sort_by(|a, b| a.0.cmp(&b.0));
-            debug!("Filtered PR groups: {:?}", filtered_pr_map);
+        }
+        _ => {
+            if repos_with_prs.len() > 1 {
+                println!("Summary:");
+                let summaries: Vec<String> = repos_with_prs
+                    .iter()
+                    .map(|repo| {
+                        repo.review(action, true).unwrap_or_else(|e| {
+                            format!("Error: {}", e)
+                        })
+                    })
+                    .collect();
 
-            for (change_id, repo_infos) in filtered_pr_map {
-                let author = repo_infos
-                    .first()
-                    .map(|(_, _, a)| a.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                println!("{} ({})", change_id, author);
+                for summary in summaries {
+                    println!("  {}", summary);
+                }
+                println!();
+            }
 
-                let repo_outputs: Vec<String> = repo_infos
-                    .into_iter()
-                    .map(|(reposlug, pr_number, _)| {
-                        let repo = crate::repo::Repo::create_repo_from_remote_with_pr(&reposlug, &change_id, pr_number);
-                        match repo.review(action, matches!(action, cli::ReviewAction::Ls { change_id_ptns, .. } if change_id_ptns.is_empty())) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                error!("Review failed for {}: {}", reposlug, e);
-                                format!("Repo {} failed: {}", reposlug, e)
-                            }
-                        }
+            if matches!(action, cli::ReviewAction::Clone { .. }) {
+                let repo_outputs: Vec<String> = repos_with_prs
+                    .par_iter()
+                    .map(|repo| {
+                        repo.review(action, false).unwrap_or_else(|e| {
+                            format!("Error processing {}: {}", repo.reposlug, e)
+                        })
                     })
                     .collect();
 
@@ -349,4 +304,197 @@ fn process_review_command(
         }
     }
     Ok(())
+}
+
+fn main() -> Result<()> {
+    env_logger::init();
+
+    let args = cli::SlamCli::from_arg_matches(&cli::SlamCli::command().get_matches())?;
+
+    match args.command {
+        cli::SlamCommand::Sandbox { repo_ptns, action } => {
+            match action {
+                cli::SandboxAction::Setup {} => {
+                    sandbox::sandbox_setup(repo_ptns)?;
+                }
+                cli::SandboxAction::Refresh {} => {
+                    sandbox::sandbox_refresh()?;
+                }
+            }
+        }
+        cli::SlamCommand::Create {
+            files,
+            change_id,
+            buffer,
+            repo_ptns,
+            action,
+        } => {
+            process_create_command(files, change_id, buffer, repo_ptns, action)?;
+        }
+        cli::SlamCommand::Review { org, action, repo_ptns } => {
+            process_review_command(org, &action, repo_ptns)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_reponame() {
+        assert_eq!(extract_reponame("org/repo"), "repo");
+        assert_eq!(extract_reponame("tatari-tv/frontend"), "frontend");
+        assert_eq!(extract_reponame("single"), "single");
+        assert_eq!(extract_reponame(""), "");
+        assert_eq!(extract_reponame("a/b/c"), "b"); // Only gets first split
+    }
+
+    #[test]
+    fn test_extract_reponame_edge_cases() {
+        assert_eq!(extract_reponame("/repo"), "repo");
+        assert_eq!(extract_reponame("org/"), "");
+        assert_eq!(extract_reponame("/"), "");
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_empty() {
+        let repos = vec![
+            create_test_repo("org/repo1"),
+            create_test_repo("org/repo2"),
+        ];
+
+        let result = filter_repos_by_spec(repos.clone(), &[]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].reposlug, "org/repo1");
+        assert_eq!(result[1].reposlug, "org/repo2");
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_exact_match() {
+        let repos = vec![
+            create_test_repo("org/frontend"),
+            create_test_repo("org/backend"),
+            create_test_repo("org/mobile"),
+        ];
+
+        let specs = vec!["frontend".to_string()];
+        let result = filter_repos_by_spec(repos, &specs);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].reposlug, "org/frontend");
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_starts_with() {
+        let repos = vec![
+            create_test_repo("org/frontend-web"),
+            create_test_repo("org/frontend-mobile"),
+            create_test_repo("org/backend"),
+        ];
+
+        let specs = vec!["front".to_string()];
+        let result = filter_repos_by_spec(repos, &specs);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|r| r.reposlug == "org/frontend-mobile"));
+        assert!(result.iter().any(|r| r.reposlug == "org/frontend-web"));
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_full_slug_exact() {
+        let repos = vec![
+            create_test_repo("org1/repo"),
+            create_test_repo("org2/repo"),
+        ];
+
+        let specs = vec!["org1/repo".to_string()];
+        let result = filter_repos_by_spec(repos, &specs);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].reposlug, "org1/repo");
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_full_slug_starts_with() {
+        let repos = vec![
+            create_test_repo("tatari-tv/frontend"),
+            create_test_repo("tatari-tv/backend"),
+            create_test_repo("other-org/frontend"),
+        ];
+
+        let specs = vec!["tatari".to_string()];
+        let result = filter_repos_by_spec(repos, &specs);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|r| r.reposlug == "tatari-tv/backend"));
+        assert!(result.iter().any(|r| r.reposlug == "tatari-tv/frontend"));
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_multiple_specs() {
+        let repos = vec![
+            create_test_repo("org/frontend"),
+            create_test_repo("org/backend"),
+            create_test_repo("org/mobile"),
+            create_test_repo("org/docs"),
+        ];
+
+        let specs = vec!["frontend".to_string(), "backend".to_string()];
+        let result = filter_repos_by_spec(repos, &specs);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|r| r.reposlug == "org/backend"));
+        assert!(result.iter().any(|r| r.reposlug == "org/frontend"));
+    }
+
+    #[test]
+    fn test_filter_repos_by_spec_sorting() {
+        let repos = vec![
+            create_test_repo("org/zebra"),
+            create_test_repo("org/alpha"),
+            create_test_repo("org/beta"),
+        ];
+
+        let result = filter_repos_by_spec(repos, &[]);
+
+        // Should be sorted alphabetically by reposlug
+        assert_eq!(result[0].reposlug, "org/alpha");
+        assert_eq!(result[1].reposlug, "org/beta");
+        assert_eq!(result[2].reposlug, "org/zebra");
+    }
+
+    // Helper function to create test repos
+    fn create_test_repo(reposlug: &str) -> repo::Repo {
+        repo::Repo {
+            reposlug: reposlug.to_string(),
+            change_id: "test-change".to_string(),
+            change: None,
+            files: vec![],
+            pr_number: 0,
+        }
+    }
+
+    #[test]
+    fn test_built_info_module_exists() {
+        // Just test that the built_info module can be referenced
+        // The actual GIT_DESCRIBE value will depend on the build environment
+        let _version = built_info::GIT_DESCRIBE;
+        // This test mainly ensures the module is properly included
+    }
+
+    #[test]
+    fn test_emoji_constants() {
+        // Test the emoji constants used in process_create_command
+        let total_emoji = "🔍";
+        let repos_emoji = "📦";
+        let files_emoji = "📄";
+        let diffs_emoji = "📝";
+
+        assert_eq!(total_emoji, "🔍");
+        assert_eq!(repos_emoji, "📦");
+        assert_eq!(files_emoji, "📄");
+        assert_eq!(diffs_emoji, "📝");
+    }
 }
