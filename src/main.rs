@@ -311,14 +311,14 @@ fn main() -> Result<()> {
 
     let args = cli::SlamCli::from_arg_matches(&cli::SlamCli::command().get_matches())?;
 
-    match args.command {
+    let result = match args.command {
         cli::SlamCommand::Sandbox { repo_ptns, action } => {
             match action {
                 cli::SandboxAction::Setup {} => {
-                    sandbox::sandbox_setup(repo_ptns)?;
+                    sandbox::sandbox_setup(repo_ptns)
                 }
                 cli::SandboxAction::Refresh {} => {
-                    sandbox::sandbox_refresh()?;
+                    sandbox::sandbox_refresh()
                 }
             }
         }
@@ -329,12 +329,44 @@ fn main() -> Result<()> {
             repo_ptns,
             action,
         } => {
-            process_create_command(files, change_id, buffer, repo_ptns, action)?;
+            process_create_command(files, change_id, buffer, repo_ptns, action)
         }
         cli::SlamCommand::Review { org, action, repo_ptns } => {
-            process_review_command(org, &action, repo_ptns)?;
+            process_review_command(org, &action, repo_ptns)
         }
+    };
+
+    if let Err(e) = result {
+        let error_msg = e.to_string();
+
+        // Provide helpful debugging suggestions for common issues
+        if error_msg.contains("Failed to parse open PRs JSON") || error_msg.contains("invalid type: map, expected u64") {
+            eprintln!("Error: {}", e);
+            eprintln!();
+            eprintln!("💡 This appears to be a JSON parsing issue. To troubleshoot:");
+            eprintln!("   1. Run with debug logging: RUST_LOG=debug slam ...");
+            eprintln!("   2. Check GitHub CLI authentication: gh auth status");
+            eprintln!("   3. Verify repository access and permissions");
+            eprintln!();
+            eprintln!("For more help, see: https://github.com/scottidler/slam/blob/main/README.md#troubleshooting-common-issues");
+        } else if error_msg.contains("Failed to list open PRs") || error_msg.contains("Failed to list remote branches") {
+            eprintln!("Error: {}", e);
+            eprintln!();
+            eprintln!("💡 This appears to be a GitHub CLI or repository access issue:");
+            eprintln!("   1. Ensure 'gh' is installed and authenticated: gh auth status");
+            eprintln!("   2. Verify you have access to the repository");
+            eprintln!("   3. Check repository name spelling and organization");
+            eprintln!("   4. Run with debug logging: RUST_LOG=debug slam ...");
+        } else {
+            eprintln!("Error: {}", e);
+            eprintln!();
+            eprintln!("💡 For detailed troubleshooting information, run with debug logging:");
+            eprintln!("   RUST_LOG=debug slam [your command]");
+        }
+
+        std::process::exit(1);
     }
+
     Ok(())
 }
 
