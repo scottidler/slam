@@ -3,11 +3,13 @@
 
 
 use clap::{CommandFactory, FromArgMatches};
-use eyre::Result;
+use eyre::{Result, Context};
 use glob::Pattern;
 use itertools::Itertools;
 use log::{debug, info, warn};
 use rayon::prelude::*;
+use std::fs;
+use std::path::PathBuf;
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
@@ -306,8 +308,32 @@ fn process_review_command(
     Ok(())
 }
 
+fn setup_logging() -> Result<()> {
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("slam");
+
+    fs::create_dir_all(&log_dir)
+        .context("Failed to create log directory")?;
+
+    let log_file = log_dir.join("slam.log");
+
+    let target = Box::new(fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .context("Failed to open log file")?);
+
+    env_logger::Builder::from_default_env()
+        .target(env_logger::Target::Pipe(target))
+        .init();
+
+    info!("Logging initialized, writing to: {}", log_file.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
-    env_logger::init();
+    setup_logging()?;
 
     let args = cli::SlamCli::from_arg_matches(&cli::SlamCli::command().get_matches())?;
 
