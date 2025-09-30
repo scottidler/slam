@@ -11,9 +11,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 
-mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/git_describe.rs"));
-}
+// Built-in version from build.rs via env!("GIT_DESCRIBE")
 
 mod cli;
 mod diff;
@@ -538,7 +536,7 @@ mod tests {
     fn test_built_info_module_exists() {
         // Just test that the built_info module can be referenced
         // The actual GIT_DESCRIBE value will depend on the build environment
-        let _version = built_info::GIT_DESCRIBE;
+        let _version = env!("GIT_DESCRIBE");
         // This test mainly ensures the module is properly included
     }
 
