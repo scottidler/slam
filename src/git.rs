@@ -1,15 +1,15 @@
 use eyre::{eyre, Result};
+use log::{debug, error, info, warn};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use log::{info, debug, warn, error};
-use rayon::iter::{
-    IntoParallelIterator,
-    ParallelIterator,
-};
 
 const MAX_RETRY: usize = 5;
+
+/// Map of repo slug -> list of PRs, each as (change-id, pr-number, branch).
+type PrsByRepo = HashMap<String, Vec<(String, u64, String)>>;
 
 fn git(repo_path: &Path, args: &[&str]) -> Result<Output> {
     Command::new("git")
@@ -23,7 +23,7 @@ pub fn clone_repo(reposlug: &str, target: &Path) -> Result<()> {
     let url = format!("git@github.com:{}.git", reposlug);
 
     let ssh_cmd_output = Command::new("git")
-        .args(&["config", "--get", "core.sshCommand"])
+        .args(["config", "--get", "core.sshCommand"])
         .output()?;
     let ssh_command = if ssh_cmd_output.status.success() {
         String::from_utf8_lossy(&ssh_cmd_output.stdout).trim().to_string()
@@ -35,7 +35,7 @@ pub fn clone_repo(reposlug: &str, target: &Path) -> Result<()> {
     info!("Cloning {} into {} quietly", reposlug, target.display());
     let status = Command::new("git")
         .env("GIT_SSH_COMMAND", ssh_command)
-        .args(&["clone", "--quiet", &url, target.to_str().unwrap()])
+        .args(["clone", "--quiet", &url, target.to_str().unwrap()])
         .status()?;
 
     if status.success() {
@@ -49,23 +49,34 @@ pub fn clone_or_update_repo(reposlug: &str, target: &Path, branch: &str) -> Resu
     let expected_url = format!("git@github.com:{}.git", reposlug);
 
     if !target.exists() {
-        info!("Target {} does not exist; cloning {} quietly", target.display(), reposlug);
+        info!(
+            "Target {} does not exist; cloning {} quietly",
+            target.display(),
+            reposlug
+        );
         clone_repo(reposlug, target)?;
     } else {
         debug!("Target {} exists; verifying remote URL...", target.display());
         let output = Command::new("git")
             .current_dir(target)
-            .args(&["config", "--get", "remote.origin.url"])
+            .args(["config", "--get", "remote.origin.url"])
             .output()?;
         let current_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if current_url != expected_url {
-            debug!("Remote URL mismatch for {}: expected {}, found {}. Updating remote URL...", reposlug, expected_url, current_url);
+            debug!(
+                "Remote URL mismatch for {}: expected {}, found {}. Updating remote URL...",
+                reposlug, expected_url, current_url
+            );
             let set_output = Command::new("git")
                 .current_dir(target)
-                .args(&["remote", "set-url", "origin", &expected_url])
+                .args(["remote", "set-url", "origin", &expected_url])
                 .output()?;
             if !set_output.status.success() {
-                return Err(eyre!("Failed to update remote URL for {}: {}", reposlug, String::from_utf8_lossy(&set_output.stderr)));
+                return Err(eyre!(
+                    "Failed to update remote URL for {}: {}",
+                    reposlug,
+                    String::from_utf8_lossy(&set_output.stderr)
+                ));
             }
         } else {
             debug!("Remote URL for {} is correct.", reposlug);
@@ -75,7 +86,7 @@ pub fn clone_or_update_repo(reposlug: &str, target: &Path, branch: &str) -> Resu
     debug!("Fetching latest changes for {} quietly...", reposlug);
     let fetch_status = Command::new("git")
         .current_dir(target)
-        .args(&["fetch", "origin", "--quiet"])
+        .args(["fetch", "origin", "--quiet"])
         .status()?;
     if !fetch_status.success() {
         return Err(eyre!("Failed to fetch remote for {}", reposlug));
@@ -89,7 +100,7 @@ pub fn clone_or_update_repo(reposlug: &str, target: &Path, branch: &str) -> Resu
 pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["checkout", "-B", branch, "--quiet"])
+        .args(["checkout", "-B", branch, "--quiet"])
         .output()
         .map_err(|e| eyre!("Failed to execute git checkout: {}", e))?;
     if output.status.success() {
@@ -123,12 +134,7 @@ pub fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
 
 pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
     let output = Command::new("gh")
-        .args([
-            "repo",
-            "list", org,
-            "--limit", "1000",
-            "--json", "name,isArchived",
-        ])
+        .args(["repo", "list", org, "--limit", "1000", "--json", "name,isArchived"])
         .output()?;
 
     if !output.status.success() {
@@ -144,7 +150,9 @@ pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
             if repo.get("isArchived").and_then(Value::as_bool).unwrap_or(false) {
                 None
             } else {
-                repo.get("name").and_then(Value::as_str).map(|name| format!("{}/{}", org, name))
+                repo.get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| format!("{}/{}", org, name))
             }
         })
         .collect();
@@ -155,12 +163,8 @@ pub fn find_repos_in_org(org: &str) -> Result<Vec<String>> {
 pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     let output = Command::new("gh")
         .args([
-            "pr", "list",
-            "--repo", repo_name,
-            "--head", change_id,
-            "--state", "open",
-            "--json", "number",
-            "--limit", "1",
+            "pr", "list", "--repo", repo_name, "--head", change_id, "--state", "open", "--json", "number", "--limit",
+            "1",
         ])
         .output()?;
 
@@ -171,7 +175,7 @@ pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     let parsed: Value = serde_json::from_slice(&output.stdout)?;
     let pr_number = parsed
         .as_array()
-        .and_then(|arr| arr.get(0))
+        .and_then(|arr| arr.first())
         .and_then(|obj| obj.get("number"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
@@ -179,17 +183,22 @@ pub fn get_pr_number_for_repo(repo_name: &str, change_id: &str) -> Result<u64> {
     Ok(pr_number)
 }
 
-pub fn get_prs_for_repos(reposlugs: Vec<String>) -> Result<HashMap<String, Vec<(String, u64, String)>>> {
-    let results: Vec<HashMap<String, Vec<(String, u64, String)>>> = reposlugs
+pub fn get_prs_for_repos(reposlugs: Vec<String>) -> Result<PrsByRepo> {
+    let results: Vec<PrsByRepo> = reposlugs
         .into_par_iter()
         .map(|reposlug: String| {
             let output = Command::new("gh")
-                .args(&[
-                    "pr", "list",
-                    "--repo", &reposlug,
-                    "--state", "open",
-                    "--json", "title,number,author",
-                    "--limit", "100",
+                .args([
+                    "pr",
+                    "list",
+                    "--repo",
+                    &reposlug,
+                    "--state",
+                    "open",
+                    "--json",
+                    "title,number,author",
+                    "--limit",
+                    "100",
                 ])
                 .output();
             if let Ok(output) = output {
@@ -202,14 +211,17 @@ pub fn get_prs_for_repos(reposlugs: Vec<String>) -> Result<HashMap<String, Vec<(
                                     pr_obj.get("title").and_then(Value::as_str),
                                     pr_obj.get("number").and_then(Value::as_u64),
                                 ) {
-                                    let author = pr_obj.get("author")
+                                    let author = pr_obj
+                                        .get("author")
                                         .and_then(|a| a.get("login"))
                                         .and_then(Value::as_str)
                                         .unwrap_or("unknown")
                                         .to_string();
-                                    map.entry(title.to_string())
-                                        .or_insert_with(Vec::new)
-                                        .push((reposlug.clone(), number, author));
+                                    map.entry(title.to_string()).or_insert_with(Vec::new).push((
+                                        reposlug.clone(),
+                                        number,
+                                        author,
+                                    ));
                                 }
                             }
                             return map;
@@ -268,7 +280,12 @@ pub fn delete_local_branch(repo_path: &Path, branch: &str) -> Result<()> {
         Ok(())
     } else {
         let err_msg = String::from_utf8_lossy(&output.stderr);
-        Err(eyre!("Failed to delete local branch '{}' in '{}': {}", branch, repo_path.display(), err_msg))
+        Err(eyre!(
+            "Failed to delete local branch '{}' in '{}': {}",
+            branch,
+            repo_path.display(),
+            err_msg
+        ))
     }
 }
 
@@ -334,7 +351,8 @@ pub fn approve_pr(repo: &str, pr_number: u64) -> Result<()> {
 pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> {
     let pr_binding = pr_number.to_string();
     let mut args = vec![
-        "pr", "merge",
+        "pr",
+        "merge",
         &pr_binding,
         "--squash",
         "--delete-branch",
@@ -353,7 +371,8 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
     debug!("merge_output = {:?}", merge_output);
 
     // Even if the command returns a success code, its output may indicate that the merge was blocked.
-    let output_combined = format!("{}{}",
+    let output_combined = format!(
+        "{}{}",
         String::from_utf8_lossy(&merge_output.stdout),
         String::from_utf8_lossy(&merge_output.stderr)
     );
@@ -363,12 +382,7 @@ pub fn merge_pr(repo: &str, pr_number: u64, admin_override: bool) -> Result<()> 
 
     // Re-check the PR status via gh pr view.
     let verify_output = Command::new("gh")
-        .args(&[
-            "pr", "view",
-            &pr_binding,
-            "--repo", repo,
-            "--json", "state,mergedAt"
-        ])
+        .args(["pr", "view", &pr_binding, "--repo", repo, "--json", "state,mergedAt"])
         .output()?;
 
     if !verify_output.status.success() {
@@ -392,7 +406,7 @@ pub fn get_head_branch(repo_path: &Path) -> Result<String> {
     // First, try to get the default branch from the remote
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
         .output();
 
     if let Ok(output) = output {
@@ -411,7 +425,7 @@ pub fn get_head_branch(repo_path: &Path) -> Result<String> {
         let remote_ref = format!("origin/{}", branch);
         let output = Command::new("git")
             .current_dir(repo_path)
-            .args(&["rev-parse", "--verify", &remote_ref])
+            .args(["rev-parse", "--verify", &remote_ref])
             .output();
 
         if let Ok(output) = output {
@@ -427,7 +441,7 @@ pub fn get_head_branch(repo_path: &Path) -> Result<String> {
 pub fn install_pre_commit_hooks(repo_path: &Path) -> Result<bool> {
     let output = Command::new("pre-commit")
         .current_dir(repo_path)
-        .args(&["install"])
+        .args(["install"])
         .output()
         .map_err(|e| eyre!("Failed to execute pre-commit install: {}", e))?;
 
@@ -463,7 +477,7 @@ pub fn run_pre_commit_with_retry(repo_path: &Path, retries: usize) -> Result<()>
 
         let output = Command::new("pre-commit")
             .current_dir(repo_path)
-            .args(&["run", "--all-files"])
+            .args(["run", "--all-files"])
             .output()
             .map_err(|e| eyre!("Failed to execute pre-commit: {}", e))?;
 
@@ -539,7 +553,13 @@ pub fn list_remote_branches_with_prefix(repo: &str, prefix: &str) -> Result<Vec<
         .filter(|name| name.starts_with(prefix))
         .collect();
 
-    debug!("Found {} branches with prefix '{}' in repo '{}': {:?}", branches.len(), prefix, repo, branches);
+    debug!(
+        "Found {} branches with prefix '{}' in repo '{}': {:?}",
+        branches.len(),
+        prefix,
+        repo,
+        branches
+    );
     Ok(branches)
 }
 
@@ -551,17 +571,15 @@ pub fn create_pr(repo_path: &std::path::Path, change_id: &str, commit_msg: &str)
         commit_msg
     );
 
-    info!("Creating pull request for '{}' on branch '{}'", repo_path.display(), change_id);
+    info!(
+        "Creating pull request for '{}' on branch '{}'",
+        repo_path.display(),
+        change_id
+    );
 
     let pr_output = Command::new("gh")
         .current_dir(repo_path)
-        .args([
-            "pr",
-            "create",
-            "--title", &title,
-            "--body", &body,
-            "--base", "main",
-        ])
+        .args(["pr", "create", "--title", &title, "--body", &body, "--base", "main"])
         .output();
 
     match pr_output {
@@ -586,12 +604,15 @@ pub fn close_pr(repo: &str, pr_number: u64) -> Result<()> {
     debug!("close_pr: current working directory: {}", cwd.display());
 
     let output = Command::new("gh")
-        .args(&[
-            "pr", "close",
+        .args([
+            "pr",
+            "close",
             &pr_number.to_string(),
-            "--repo", repo,
+            "--repo",
+            repo,
             "--delete-branch",
-            "--comment", "Closing old PR in favor of new changes",
+            "--comment",
+            "Closing old PR in favor of new changes",
         ])
         .output()?;
     if output.status.success() {
@@ -655,10 +676,12 @@ pub fn checkout(repo_path: &Path, branch: &str) -> Result<()> {
         info!("Checked out branch '{}' in '{}'", branch, repo_path.display());
         Ok(())
     } else {
-        Err(eyre!("Failed to checkout branch '{}' in '{}': {}",
+        Err(eyre!(
+            "Failed to checkout branch '{}' in '{}': {}",
             branch,
             repo_path.display(),
-            String::from_utf8_lossy(&output.stderr)))
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -673,9 +696,11 @@ pub fn reset_commit(repo_path: &Path) -> Result<()> {
         info!("Reset the last commit in '{}'", repo_path.display());
         Ok(())
     } else {
-        Err(eyre!("Failed to reset commit in '{}': {}",
+        Err(eyre!(
+            "Failed to reset commit in '{}': {}",
             repo_path.display(),
-            String::from_utf8_lossy(&output.stderr)))
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -683,7 +708,7 @@ pub fn reset_commit(repo_path: &Path) -> Result<()> {
 pub fn has_untracked_files(repo_path: &Path) -> Result<bool> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["status", "--porcelain"])
+        .args(["status", "--porcelain"])
         .output()
         .map_err(|e| eyre!("Failed to run git status: {}", e))?;
     let status_str = String::from_utf8_lossy(&output.stdout);
@@ -700,7 +725,7 @@ pub fn has_modified_files(repo_path: &Path) -> Result<bool> {
     // git diff-index --quiet returns exit code 0 when there are no differences.
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["diff-index", "--quiet", "HEAD", "--"])
+        .args(["diff-index", "--quiet", "HEAD", "--"])
         .output()
         .map_err(|e| eyre!("Failed to run git diff-index: {}", e))?;
     // If exit code is 0, no modifications; otherwise, modifications exist.
@@ -712,7 +737,7 @@ pub fn has_modified_files(repo_path: &Path) -> Result<bool> {
 pub fn stash_save(repo_path: &Path) -> Result<String> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["stash", "push", "-m", "SLAM pre-branch-stash"])
+        .args(["stash", "push", "-m", "SLAM pre-branch-stash"])
         .output()
         .map_err(|e| eyre!("Failed to run git stash push: {}", e))?;
     if output.status.success() {
@@ -720,7 +745,10 @@ pub fn stash_save(repo_path: &Path) -> Result<String> {
         // Assume that our new stash is at stash@{0}
         Ok("stash@{0}".to_string())
     } else {
-        Err(eyre!("Failed to stash changes: {}", String::from_utf8_lossy(&output.stderr)))
+        Err(eyre!(
+            "Failed to stash changes: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -728,14 +756,18 @@ pub fn stash_save(repo_path: &Path) -> Result<String> {
 pub fn stash_pop(repo_path: &Path, stash_ref: String) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["stash", "pop", &stash_ref])
+        .args(["stash", "pop", &stash_ref])
         .output()
         .map_err(|e| eyre!("Failed to run git stash pop: {}", e))?;
     if output.status.success() {
         info!("Popped stash {} in '{}'", stash_ref, repo_path.display());
         Ok(())
     } else {
-        Err(eyre!("Failed to pop stash {}: {}", stash_ref, String::from_utf8_lossy(&output.stderr)))
+        Err(eyre!(
+            "Failed to pop stash {}: {}",
+            stash_ref,
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -743,14 +775,17 @@ pub fn stash_pop(repo_path: &Path, stash_ref: String) -> Result<()> {
 pub fn pull(repo_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["pull"])
+        .args(["pull"])
         .output()
         .map_err(|e| eyre!("Failed to run git pull: {}", e))?;
     if output.status.success() {
         info!("Pulled latest changes in '{}'", repo_path.display());
         Ok(())
     } else {
-        Err(eyre!("Failed to pull changes: {}", String::from_utf8_lossy(&output.stderr)))
+        Err(eyre!(
+            "Failed to pull changes: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -758,14 +793,17 @@ pub fn pull(repo_path: &Path) -> Result<()> {
 pub fn reset_hard(repo_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["reset", "--hard", "HEAD"])
+        .args(["reset", "--hard", "HEAD"])
         .output()
         .map_err(|e| eyre!("Failed to run git reset --hard: {}", e))?;
     if output.status.success() {
         info!("Performed hard reset in '{}'", repo_path.display());
         Ok(())
     } else {
-        Err(eyre!("Failed to reset hard: {}", String::from_utf8_lossy(&output.stderr)))
+        Err(eyre!(
+            "Failed to reset hard: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -773,14 +811,21 @@ pub fn reset_hard(repo_path: &Path) -> Result<()> {
 pub fn commit_all(repo_path: &Path, message: &str) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["commit", "-am", message])
+        .args(["commit", "-am", message])
         .output()
         .map_err(|e| eyre!("Failed to run git commit -am: {}", e))?;
     if output.status.success() {
-        info!("Committed changes in '{}' with message: {}", repo_path.display(), message);
+        info!(
+            "Committed changes in '{}' with message: {}",
+            repo_path.display(),
+            message
+        );
         Ok(())
     } else {
-        Err(eyre!("Failed to commit changes: {}", String::from_utf8_lossy(&output.stderr)))
+        Err(eyre!(
+            "Failed to commit changes: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -794,11 +839,14 @@ pub struct PrStatus {
 
 pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
     let output = Command::new("gh")
-        .args(&[
-            "pr", "view",
+        .args([
+            "pr",
+            "view",
             &pr_number.to_string(),
-            "--repo", repo_name,
-            "--json", "isDraft,mergeable,reviewDecision,statusCheckRollup",
+            "--repo",
+            repo_name,
+            "--json",
+            "isDraft,mergeable,reviewDecision,statusCheckRollup",
         ])
         .output()
         .map_err(|e| eyre!("Failed to execute gh pr view: {}", e))?;
@@ -812,8 +860,7 @@ pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
         ));
     }
 
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| eyre!("Failed to parse PR JSON: {}", e))?;
+    let json: Value = serde_json::from_slice(&output.stdout).map_err(|e| eyre!("Failed to parse PR JSON: {}", e))?;
 
     // Log only a summary of the fields
     debug!(
@@ -829,15 +876,9 @@ pub fn get_pr_status(repo_name: &str, pr_number: u64) -> Result<PrStatus> {
     // Determine status based on key fields:
     let draft = json["isDraft"].as_bool().unwrap_or(false);
 
-    let mergeable = match json["mergeable"].as_str() {
-        Some(s) if s == "MERGEABLE" => true,
-        _ => false,
-    };
+    let mergeable = json["mergeable"].as_str() == Some("MERGEABLE");
 
-    let reviewed = match json["reviewDecision"].as_str() {
-        Some(s) if s == "APPROVED" => true,
-        _ => false,
-    };
+    let reviewed = json["reviewDecision"].as_str() == Some("APPROVED");
 
     // Consider both "SUCCESS" and "SKIPPED" as acceptable outcomes.
     let checked = if let Some(arr) = json["statusCheckRollup"].as_array() {
@@ -866,7 +907,16 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
     // Close only PRs with titles starting with "SLAM-"
     debug!("Listing open PRs with SLAM titles for repo '{}'", repo);
     let pr_output = Command::new("gh")
-        .args(&["pr", "list", "--repo", repo, "--state", "open", "--json", "number,title"])
+        .args([
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--json",
+            "number,title",
+        ])
         .output()?;
 
     if !pr_output.status.success() {
@@ -879,11 +929,10 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
     debug!("GitHub CLI output for repo '{}': {}", repo, stdout_str);
 
     // Parse JSON correctly - expecting an array of objects with "number" and "title" fields
-    let parsed: Value = serde_json::from_slice(&pr_output.stdout)
-        .map_err(|e| {
-            error!("Failed to parse JSON for repo '{}'. Raw output: {}", repo, stdout_str);
-            eyre!("Failed to parse open PRs JSON for repo '{}': {}", repo, e)
-        })?;
+    let parsed: Value = serde_json::from_slice(&pr_output.stdout).map_err(|e| {
+        error!("Failed to parse JSON for repo '{}'. Raw output: {}", repo, stdout_str);
+        eyre!("Failed to parse open PRs JSON for repo '{}': {}", repo, e)
+    })?;
 
     let slam_pr_numbers: Vec<u64> = if let Some(arr) = parsed.as_array() {
         debug!("Found {} total PR entries for repo '{}'", arr.len(), repo);
@@ -897,17 +946,28 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
                     debug!("Found SLAM PR #{} with title '{}' in repo '{}'", number, title, repo);
                     Some(number)
                 } else {
-                    debug!("Skipping non-SLAM PR #{} with title '{}' in repo '{}'", number, title, repo);
+                    debug!(
+                        "Skipping non-SLAM PR #{} with title '{}' in repo '{}'",
+                        number, title, repo
+                    );
                     None
                 }
             })
             .collect()
     } else {
         error!("Expected JSON array for repo '{}', got: {}", repo, parsed);
-        return Err(eyre!("Expected JSON array for repo '{}', but got different format", repo));
+        return Err(eyre!(
+            "Expected JSON array for repo '{}', but got different format",
+            repo
+        ));
     };
 
-    debug!("Extracted {} SLAM PR numbers for repo '{}': {:?}", slam_pr_numbers.len(), repo, slam_pr_numbers);
+    debug!(
+        "Extracted {} SLAM PR numbers for repo '{}': {:?}",
+        slam_pr_numbers.len(),
+        repo,
+        slam_pr_numbers
+    );
 
     for pr in slam_pr_numbers {
         debug!("Closing SLAM PR #{} for repo '{}'", pr, repo);
@@ -918,7 +978,12 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
     // Delete every remote branch that starts with "SLAM".
     debug!("Listing remote branches with prefix 'SLAM' for repo '{}'", repo);
     let branches = list_remote_branches_with_prefix(repo, "SLAM")?;
-    debug!("Found {} SLAM branches for repo '{}': {:?}", branches.len(), repo, branches);
+    debug!(
+        "Found {} SLAM branches for repo '{}': {:?}",
+        branches.len(),
+        repo,
+        branches
+    );
 
     for branch in branches {
         debug!("Deleting remote branch '{}' for repo '{}'", branch, repo);
@@ -926,7 +991,11 @@ pub fn purge_repo(repo: &str) -> Result<Vec<String>> {
         messages.push(format!("Deleted remote branch '{}' for repo '{}'", branch, repo));
     }
 
-    debug!("Completed purge operation for repo '{}' with {} actions", repo, messages.len());
+    debug!(
+        "Completed purge operation for repo '{}' with {} actions",
+        repo,
+        messages.len()
+    );
     Ok(messages)
 }
 
@@ -934,7 +1003,7 @@ pub fn get_repo_slug(repo_path: &Path) -> Result<String> {
     // Get the remote origin URL.
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["config", "--get", "remote.origin.url"])
+        .args(["config", "--get", "remote.origin.url"])
         .output()
         .map_err(|e| eyre!("Failed to get remote origin url for {}: {}", repo_path.display(), e))?;
     if !output.status.success() {
@@ -956,7 +1025,7 @@ pub fn get_repo_slug(repo_path: &Path) -> Result<String> {
 pub fn remote_prune(repo_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["remote", "prune", "origin"])
+        .args(["remote", "prune", "origin"])
         .output()
         .map_err(|e| eyre!("Failed to execute git remote prune origin: {}", e))?;
     if output.status.success() {
@@ -974,7 +1043,7 @@ pub fn remote_prune(repo_path: &Path) -> Result<()> {
 pub fn list_local_branches_with_prefix(repo_path: &Path, prefix: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["branch", "--list"])
+        .args(["branch", "--list"])
         .output()
         .map_err(|e| eyre!("Failed to list local branches in '{}': {}", repo_path.display(), e))?;
     if !output.status.success() {
@@ -995,7 +1064,7 @@ pub fn list_local_branches_with_prefix(repo_path: &Path, prefix: &str) -> Result
 pub fn get_head_sha(repo_path: &Path) -> Result<String> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["rev-parse", "HEAD"])
+        .args(["rev-parse", "HEAD"])
         .output()
         .map_err(|e| eyre!("Failed to run git rev-parse HEAD: {}", e))?;
     if !output.status.success() {
@@ -1014,7 +1083,7 @@ pub fn get_head_sha(repo_path: &Path) -> Result<String> {
 pub fn _has_staged_files(repo_path: &Path) -> Result<bool> {
     let output = Command::new("git")
         .current_dir(repo_path)
-        .args(&["diff", "--cached", "--quiet"])
+        .args(["diff", "--cached", "--quiet"])
         .output()
         .map_err(|e| eyre!("Failed to run git diff --cached --quiet: {}", e))?;
     // exit code 0 means no staged changes
@@ -1051,9 +1120,14 @@ pub fn _preflight_checks(repo_path: &Path) -> Result<()> {
         .output()
         .map_err(|e| eyre!("Failed to get current branch for repo {}: {}", repo_path.display(), e))?;
     if !current_branch_output.status.success() {
-        return Err(eyre!("Failed to determine current branch for repo {}", repo_path.display()));
+        return Err(eyre!(
+            "Failed to determine current branch for repo {}",
+            repo_path.display()
+        ));
     }
-    let current_branch = String::from_utf8_lossy(&current_branch_output.stdout).trim().to_string();
+    let current_branch = String::from_utf8_lossy(&current_branch_output.stdout)
+        .trim()
+        .to_string();
     let status_output = Command::new("git")
         .current_dir(repo_path)
         .args(["status", "--porcelain"])
@@ -1064,9 +1138,17 @@ pub fn _preflight_checks(repo_path: &Path) -> Result<()> {
     }
     let status_str = String::from_utf8_lossy(&status_output.stdout);
     if status_str.lines().any(|line| line.starts_with("??")) {
-        return Err(eyre!("Untracked files present in repo {}. Please commit or remove them.", repo_path.display()));
+        return Err(eyre!(
+            "Untracked files present in repo {}. Please commit or remove them.",
+            repo_path.display()
+        ));
     }
-    if !status_str.lines().filter(|line| !line.starts_with("??") && !line.trim().is_empty()).collect::<Vec<_>>().is_empty() {
+    if !status_str
+        .lines()
+        .filter(|line| !line.starts_with("??") && !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .is_empty()
+    {
         let stash_output = Command::new("git")
             .current_dir(repo_path)
             .args(["stash", "push", "-m", "SLAM pre-branch-stash"])
@@ -1081,9 +1163,20 @@ pub fn _preflight_checks(repo_path: &Path) -> Result<()> {
             .current_dir(repo_path)
             .args(["checkout", &head_branch])
             .output()
-            .map_err(|e| eyre!("Failed to checkout branch {} in repo {}: {}", head_branch, repo_path.display(), e))?;
+            .map_err(|e| {
+                eyre!(
+                    "Failed to checkout branch {} in repo {}: {}",
+                    head_branch,
+                    repo_path.display(),
+                    e
+                )
+            })?;
         if !checkout_output.status.success() {
-            return Err(eyre!("Failed to checkout branch {} in repo {}", head_branch, repo_path.display()));
+            return Err(eyre!(
+                "Failed to checkout branch {} in repo {}",
+                head_branch,
+                repo_path.display()
+            ));
         }
     }
     let pull_output = Command::new("git")
@@ -1148,9 +1241,7 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
         .output();
 
     let current_branch = match head_output {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        }
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).trim().to_string(),
         _ => {
             warn!(
                 "Skipping repository '{}': Not on a valid branch or in detached HEAD state.",
@@ -1159,15 +1250,11 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
             return false;
         }
     };
-    debug!(
-        "Current branch in '{}': '{}'",
-        repo_path.display(),
-        current_branch
-    );
+    debug!("Current branch in '{}': '{}'", repo_path.display(), current_branch);
 
     let branch_exists = Command::new("git")
         .current_dir(repo_path)
-        .args(["rev-parse", "--verify", &change_id])
+        .args(["rev-parse", "--verify", change_id])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -1180,7 +1267,7 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
         );
         let status = Command::new("git")
             .current_dir(repo_path)
-            .args(["checkout", "-b", &change_id])
+            .args(["checkout", "-b", change_id])
             .status();
 
         if let Err(err) = status {
@@ -1200,7 +1287,7 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
         );
         let status = Command::new("git")
             .current_dir(repo_path)
-            .args(["checkout", &change_id])
+            .args(["checkout", change_id])
             .status();
 
         if let Err(err) = status {
@@ -1214,24 +1301,16 @@ pub fn _create_or_switch_branch(repo_path: &Path, change_id: &str) -> bool {
         }
     }
 
-    info!(
-        "Switched to branch '{}' in '{}'",
-        change_id,
-        repo_path.display()
-    );
+    info!("Switched to branch '{}' in '{}'", change_id, repo_path.display());
     true
 }
 
 pub fn _push_branch(repo_path: &Path, change_id: &str) -> bool {
-    info!(
-        "Pushing branch '{}' to remote in '{}'",
-        change_id,
-        repo_path.display()
-    );
+    info!("Pushing branch '{}' to remote in '{}'", change_id, repo_path.display());
 
     let status = Command::new("git")
         .current_dir(repo_path)
-        .args(["push", "--set-upstream", "origin", &change_id])
+        .args(["push", "--set-upstream", "origin", change_id])
         .status();
 
     if let Err(err) = status {
@@ -1258,7 +1337,11 @@ pub fn _reopen_pr(repo: &str, change_id: &str) -> Result<()> {
     // Find a closed PR by change_id. We assume at most one closed PR exists.
     let pr_number = _get_closed_pr_number_for_repo(repo, change_id)?;
     if pr_number == 0 {
-        return Err(eyre!("No closed PR found for repo '{}' with change_id '{}'", repo, change_id));
+        return Err(eyre!(
+            "No closed PR found for repo '{}' with change_id '{}'",
+            repo,
+            change_id
+        ));
     }
     let output = Command::new("gh")
         .args(["pr", "reopen", &pr_number.to_string(), "--repo", repo])
@@ -1268,10 +1351,12 @@ pub fn _reopen_pr(repo: &str, change_id: &str) -> Result<()> {
         info!("Reopened PR #{} for repo '{}'", pr_number, repo);
         Ok(())
     } else {
-        Err(eyre!("Failed to reopen PR #{} for repo '{}': {}",
+        Err(eyre!(
+            "Failed to reopen PR #{} for repo '{}': {}",
             pr_number,
             repo,
-            String::from_utf8_lossy(&output.stderr)))
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -1297,13 +1382,20 @@ pub fn _create_branch(repo_path: &Path, branch: &str, commit: String) -> Result<
         .output()
         .map_err(|e| eyre!("Failed to execute git checkout -b: {}", e))?;
     if output.status.success() {
-        info!("Created branch '{}' at commit {} in '{}'", branch, commit, repo_path.display());
-        Ok(())
-    } else {
-        Err(eyre!("Failed to create branch '{}' at commit {}: {}",
+        info!(
+            "Created branch '{}' at commit {} in '{}'",
             branch,
             commit,
-            String::from_utf8_lossy(&output.stderr)))
+            repo_path.display()
+        );
+        Ok(())
+    } else {
+        Err(eyre!(
+            "Failed to create branch '{}' at commit {}: {}",
+            branch,
+            commit,
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -1318,9 +1410,11 @@ pub fn _unstage_all(repo_path: &Path) -> Result<()> {
         info!("Unstaged all files in '{}'", repo_path.display());
         Ok(())
     } else {
-        Err(eyre!("Failed to unstage files in '{}': {}",
+        Err(eyre!(
+            "Failed to unstage files in '{}': {}",
             repo_path.display(),
-            String::from_utf8_lossy(&output.stderr)))
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -1329,12 +1423,7 @@ pub fn _unstage_all(repo_path: &Path) -> Result<()> {
 pub fn _get_closed_pr_number_for_repo(repo: &str, change_id: &str) -> Result<u64> {
     let output = Command::new("gh")
         .args([
-            "pr", "list",
-            "--repo", repo,
-            "--head", change_id,
-            "--state", "closed",
-            "--json", "number",
-            "--limit", "1",
+            "pr", "list", "--repo", repo, "--head", change_id, "--state", "closed", "--json", "number", "--limit", "1",
         ])
         .output()?;
 
@@ -1345,7 +1434,7 @@ pub fn _get_closed_pr_number_for_repo(repo: &str, change_id: &str) -> Result<u64
     let parsed: Value = serde_json::from_slice(&output.stdout)?;
     let pr_number = parsed
         .as_array()
-        .and_then(|arr| arr.get(0))
+        .and_then(|arr| arr.first())
         .and_then(|obj| obj.get("number"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
@@ -1511,7 +1600,8 @@ mod tests {
         // Test without admin override
         let pr_binding = pr_number.to_string();
         let mut args = vec![
-            "pr", "merge",
+            "pr",
+            "merge",
             &pr_binding,
             "--squash",
             "--delete-branch",
@@ -1789,7 +1879,11 @@ mod tests {
         };
 
         // THE DEFINITIVE PROOF: Only 2 SLAM PRs should be selected out of 10 total
-        assert_eq!(slam_pr_numbers.len(), 2, "CATASTROPHIC BUG FIXED: Only 2 out of 10 PRs selected");
+        assert_eq!(
+            slam_pr_numbers.len(),
+            2,
+            "CATASTROPHIC BUG FIXED: Only 2 out of 10 PRs selected"
+        );
 
         // Verify the correct SLAM PRs are selected
         assert!(slam_pr_numbers.contains(&1003), "Should select SLAM PR #1003");
@@ -1798,8 +1892,11 @@ mod tests {
         // CRITICAL: Verify legitimate PRs are NOT selected (this is what caused the disaster)
         let legitimate_prs = vec![1001, 1002, 1004, 1005, 1007, 1008, 1009, 1010];
         for pr in legitimate_prs {
-            assert!(!slam_pr_numbers.contains(&pr),
-                "CATASTROPHIC BUG PREVENTION: Legitimate PR #{} must NOT be selected", pr);
+            assert!(
+                !slam_pr_numbers.contains(&pr),
+                "CATASTROPHIC BUG PREVENTION: Legitimate PR #{} must NOT be selected",
+                pr
+            );
         }
 
         println!("✅ DEFINITIVE PROOF: Catastrophic bug is FIXED");

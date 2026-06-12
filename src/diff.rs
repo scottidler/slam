@@ -1,6 +1,6 @@
 use colored::*;
-use similar::{ChangeTag, TextDiff};
 use regex::Regex;
+use similar::{ChangeTag, TextDiff};
 
 pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, String, String)> {
     let mut results = Vec::new();
@@ -15,11 +15,7 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
     for line in diff_text.lines() {
         if line.starts_with("diff --git ") {
             if !current_filename.is_empty() {
-                results.push((
-                    current_filename.clone(),
-                    orig_lines.join("\n"),
-                    upd_lines.join("\n"),
-                ));
+                results.push((current_filename.clone(), orig_lines.join("\n"), upd_lines.join("\n")));
             }
             current_filename.clear();
             orig_lines.clear();
@@ -52,8 +48,8 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
                 }
                 next_upd_line = hunk_upd_start;
             }
-        } else if line.starts_with(" ") {
-            let content = line[1..].to_string();
+        } else if let Some(content) = line.strip_prefix(" ") {
+            let content = content.to_string();
             orig_lines.push(content.clone());
             upd_lines.push(content);
             next_orig_line += 1;
@@ -69,11 +65,7 @@ pub fn reconstruct_files_from_unified_diff(diff_text: &str) -> Vec<(String, Stri
         }
     }
     if !current_filename.is_empty() {
-        results.push((
-            current_filename,
-            orig_lines.join("\n"),
-            upd_lines.join("\n"),
-        ));
+        results.push((current_filename, orig_lines.join("\n"), upd_lines.join("\n")));
     }
     results
 }
@@ -82,11 +74,7 @@ pub fn generate_diff(original: &str, updated: &str, buffer: usize) -> String {
     if updated.is_empty() {
         let mut result = String::new();
         for (i, line) in original.lines().enumerate() {
-            result.push_str(&format!(
-                "{} | {}\n",
-                format!("-{:4}", i + 1).red(),
-                line.red()
-            ));
+            result.push_str(&format!("{} | {}\n", format!("-{:4}", i + 1).red(), line.red()));
         }
         return result;
     }
@@ -300,7 +288,13 @@ index 1234567..abcdefg 100644
 
         let (filename, orig, upd) = &result[0];
         assert_eq!(filename, "file.txt");
-        assert_eq!(orig, "\ncontext_line1\ncontext_line2\nold_line\ncontext_line3\ncontext_line4");
-        assert_eq!(upd, "\ncontext_line1\ncontext_line2\nnew_line\ncontext_line3\ncontext_line4");
+        assert_eq!(
+            orig,
+            "\ncontext_line1\ncontext_line2\nold_line\ncontext_line3\ncontext_line4"
+        );
+        assert_eq!(
+            upd,
+            "\ncontext_line1\ncontext_line2\nnew_line\ncontext_line3\ncontext_line4"
+        );
     }
 }

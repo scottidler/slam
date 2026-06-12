@@ -1,5 +1,5 @@
-use log::{debug, error};
 use eyre::Result;
+use log::{debug, error};
 //------------------------------------------------------------------------------
 // Transaction Struct Definition
 //------------------------------------------------------------------------------
@@ -32,7 +32,10 @@ impl Transaction {
 
     /// Executes rollback actions in reverse order. Each error is logged.
     pub fn rollback(&mut self) {
-        error!("An error occurred; initiating rollback of {} actions", self.rollsbacks.len());
+        error!(
+            "An error occurred; initiating rollback of {} actions",
+            self.rollsbacks.len()
+        );
         while let Some(action) = self.rollsbacks.pop() {
             if let Err(e) = action() {
                 error!("Rollback action failed: {:?}", e);
@@ -52,8 +55,8 @@ impl Transaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use eyre::eyre;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_transaction_new() {
@@ -129,9 +132,7 @@ mod tests {
         });
 
         // Add a failing rollback action
-        transaction.add_rollback(|| {
-            Err(eyre!("Rollback failed"))
-        });
+        transaction.add_rollback(|| Err(eyre!("Rollback failed")));
 
         // Add another successful rollback action
         let counter_clone2 = Arc::clone(&counter);

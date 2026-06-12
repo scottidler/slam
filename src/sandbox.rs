@@ -27,7 +27,11 @@ pub fn refresh_repo(repo: &Path) -> Result<String> {
     // Remove any local branches starting with "SLAM" that don't have a corresponding remote branch.
     match git::list_local_branches_with_prefix(repo, "SLAM") {
         Ok(local_branches) => {
-            debug!("Found {} local SLAM branches in '{}'", local_branches.len(), repo.display());
+            debug!(
+                "Found {} local SLAM branches in '{}'",
+                local_branches.len(),
+                repo.display()
+            );
             for branch in local_branches {
                 match git::remote_branch_exists(repo, &branch) {
                     Ok(true) => {
@@ -92,7 +96,10 @@ pub fn refresh_repo(repo: &Path) -> Result<String> {
                 success_emoji
             }
             Ok(false) | Err(_) => {
-                debug!("Pre-commit hooks installation failed or hook file missing in repo '{}'", repo.display());
+                debug!(
+                    "Pre-commit hooks installation failed or hook file missing in repo '{}'",
+                    repo.display()
+                );
                 error_emoji
             }
         }
@@ -183,9 +190,10 @@ pub fn sandbox_setup(repo_ptns: Vec<String>) -> Result<()> {
         repos.clone()
     } else {
         debug!("Filtering repositories with patterns: {:?}", repo_ptns);
-        repos.into_iter().filter(|r| {
-            repo_ptns.iter().any(|ptn| r.contains(ptn))
-        }).collect()
+        repos
+            .into_iter()
+            .filter(|r| repo_ptns.iter().any(|ptn| r.contains(ptn)))
+            .collect()
     };
     info!("After filtering, {} repos remain", filtered_repos.len());
 
@@ -196,7 +204,11 @@ pub fn sandbox_setup(repo_ptns: Vec<String>) -> Result<()> {
         let target = cwd.join(reposlug);
 
         if target.exists() {
-            debug!("Repository {} already exists in {}; performing full refresh...", reposlug, target.display());
+            debug!(
+                "Repository {} already exists in {}; performing full refresh...",
+                reposlug,
+                target.display()
+            );
 
             // Perform a full refresh to ensure the repo is on HEAD branch and up to date
             match refresh_repo(&target) {
@@ -249,9 +261,10 @@ mod tests {
         let filtered: Vec<String> = if empty_patterns.is_empty() {
             all_repos.clone()
         } else {
-            all_repos.into_iter().filter(|r| {
-                empty_patterns.iter().any(|ptn| r.contains(ptn))
-            }).collect()
+            all_repos
+                .into_iter()
+                .filter(|r| empty_patterns.iter().any(|ptn| r.contains(ptn)))
+                .collect()
         };
 
         assert_eq!(filtered.len(), 3);
@@ -269,10 +282,11 @@ mod tests {
             "tatari-tv/different".to_string(),
         ];
 
-        let patterns = vec!["repo".to_string()];
-        let filtered: Vec<String> = all_repos.into_iter().filter(|r| {
-            patterns.iter().any(|ptn| r.contains(ptn))
-        }).collect();
+        let patterns = ["repo".to_string()];
+        let filtered: Vec<String> = all_repos
+            .into_iter()
+            .filter(|r| patterns.iter().any(|ptn| r.contains(ptn)))
+            .collect();
 
         assert_eq!(filtered.len(), 3);
         assert!(filtered.contains(&"tatari-tv/repo1".to_string()));
@@ -290,10 +304,11 @@ mod tests {
             "tatari-tv/docs".to_string(),
         ];
 
-        let patterns = vec!["app".to_string(), "service".to_string()];
-        let filtered: Vec<String> = all_repos.into_iter().filter(|r| {
-            patterns.iter().any(|ptn| r.contains(ptn))
-        }).collect();
+        let patterns = ["app".to_string(), "service".to_string()];
+        let filtered: Vec<String> = all_repos
+            .into_iter()
+            .filter(|r| patterns.iter().any(|ptn| r.contains(ptn)))
+            .collect();
 
         assert_eq!(filtered.len(), 3);
         assert!(filtered.contains(&"tatari-tv/frontend-app".to_string()));
@@ -390,16 +405,16 @@ mod tests {
         // Expected format: "{:>6} {} {} {}"
         // This matches the format used in refresh_repo
         let format_template = "{:>6} {} {} {}";
-        assert!(format_template.contains("{:>6}"));  // Right-aligned branch
+        assert!(format_template.contains("{:>6}")); // Right-aligned branch
 
         // Count the number of format placeholders (both {:>6} and {})
         let right_aligned_count = format_template.matches("{:>6}").count();
         let simple_placeholder_count = format_template.matches(" {}").count(); // Space before {} to avoid counting part of {:>6}
         let total_placeholders = right_aligned_count + simple_placeholder_count;
 
-        assert_eq!(right_aligned_count, 1);  // One right-aligned placeholder
-        assert_eq!(simple_placeholder_count, 3);  // Three simple placeholders
-        assert_eq!(total_placeholders, 4);  // Four placeholders total
+        assert_eq!(right_aligned_count, 1); // One right-aligned placeholder
+        assert_eq!(simple_placeholder_count, 3); // Three simple placeholders
+        assert_eq!(total_placeholders, 4); // Four placeholders total
     }
 
     #[test]
@@ -431,9 +446,17 @@ mod tests {
         let mock_setup_cloned_output = "  main ghi9012 📥 tatari-tv/cloned-repo";
 
         // All should have the same structure
-        for output in [mock_refresh_output, mock_setup_existing_output, mock_setup_cloned_output] {
+        for output in [
+            mock_refresh_output,
+            mock_setup_existing_output,
+            mock_setup_cloned_output,
+        ] {
             let parts: Vec<&str> = output.split_whitespace().collect();
-            assert_eq!(parts.len(), 4, "Output should have 4 parts: branch, sha, emoji, reposlug");
+            assert_eq!(
+                parts.len(),
+                4,
+                "Output should have 4 parts: branch, sha, emoji, reposlug"
+            );
 
             // Branch part (first part)
             assert!(!parts[0].is_empty(), "Branch name should not be empty");
@@ -464,6 +487,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_sandbox_refresh_uses_parallel_processing() {
         // Test that sandbox_refresh uses par_iter() for parallel processing
         // Similar to the setup test, this verifies the structural consistency
@@ -492,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_setup_handles_existing_and_new_repos() {
         // Test that setup handles both existing repos (calls refresh_repo)
         // and new repos (calls generate_clone_status) consistently
@@ -523,7 +548,12 @@ mod tests {
         let error_msg_setup_status = "Failed to generate status for cloned repository";
 
         // All error messages should be descriptive and non-empty
-        for msg in [error_msg_refresh, error_msg_setup_refresh, error_msg_setup_clone, error_msg_setup_status] {
+        for msg in [
+            error_msg_refresh,
+            error_msg_setup_refresh,
+            error_msg_setup_clone,
+            error_msg_setup_status,
+        ] {
             assert!(!msg.is_empty(), "Error message should not be empty");
             assert!(msg.len() > 10, "Error message should be descriptive");
         }

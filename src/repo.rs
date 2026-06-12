@@ -1,13 +1,13 @@
-use std::fs;
 use eyre::{eyre, Result};
-use log::{info, debug, warn, error};
+use log::{debug, error, info, warn};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli;
-use crate::git;
 use crate::diff;
-use crate::utils;
+use crate::git;
 use crate::transaction;
+use crate::utils;
 
 #[derive(Debug, Clone)]
 pub enum Change {
@@ -85,13 +85,7 @@ impl Repo {
     /// Generate a diff for this repo+change.  If `commit` is true, any
     /// filesystem mutations should already have been applied by process_file.
     /// Generate a diff for this repo+change. If `commit` is true, file edits have been applied.
-    pub fn create_diff(
-        &self,
-        root: &Path,
-        buffer: usize,
-        commit: bool,
-        simplified: bool,
-    ) -> String {
+    pub fn create_diff(&self, root: &Path, buffer: usize, commit: bool, simplified: bool) -> String {
         let repo_path = root.join(&self.reposlug);
         let mut file_diffs = String::new();
 
@@ -198,7 +192,10 @@ impl Repo {
             return Err(eyre!("Untracked files exist in '{}'. Aborting.", repo_path.display()));
         }
         if git::has_modified_files(&repo_path)? {
-            info!("Modified/staged files detected in '{}'; stashing changes.", repo_path.display());
+            info!(
+                "Modified/staged files detected in '{}'; stashing changes.",
+                repo_path.display()
+            );
             let stash_ref = git::stash_save(&repo_path)?;
             transaction.add_rollback({
                 let repo_path = repo_path.clone();
@@ -215,7 +212,9 @@ impl Repo {
         if original_branch != head_branch {
             info!(
                 "Switching from branch '{}' to HEAD branch '{}' in '{}'",
-                original_branch, head_branch, repo_path.display()
+                original_branch,
+                head_branch,
+                repo_path.display()
             );
             git::checkout(&repo_path, &head_branch)?;
             transaction.add_rollback({
@@ -279,7 +278,6 @@ impl Repo {
 
         // Run pre-commit hooks.
         git::run_pre_commit_with_retry(&repo_path, 2)?;
-
 
         // Dry run: if no commit message is provided, roll back changes and return diff.
         if commit_msg.is_none() {
@@ -370,13 +368,25 @@ impl Repo {
             cli::ReviewAction::Approve { .. } => {
                 let status = git::get_pr_status(&self.reposlug, self.pr_number)?;
                 if status.draft {
-                    return Err(eyre!("PR {} in repo '{}' is a draft and cannot be approved.", self.pr_number, self.reposlug));
+                    return Err(eyre!(
+                        "PR {} in repo '{}' is a draft and cannot be approved.",
+                        self.pr_number,
+                        self.reposlug
+                    ));
                 }
                 if !status.mergeable {
-                    return Err(eyre!("PR {} in repo '{}' is not mergeable; a rebase is required.", self.pr_number, self.reposlug));
+                    return Err(eyre!(
+                        "PR {} in repo '{}' is not mergeable; a rebase is required.",
+                        self.pr_number,
+                        self.reposlug
+                    ));
                 }
                 if !status.checked {
-                    return Err(eyre!("PR {} in repo '{}' has not passed all status checks.", self.pr_number, self.reposlug));
+                    return Err(eyre!(
+                        "PR {} in repo '{}' has not passed all status checks.",
+                        self.pr_number,
+                        self.reposlug
+                    ));
                 }
                 if status.reviewed {
                     warn!("PR {} is already reviewed; skipping re-approval.", self.pr_number);
@@ -386,11 +396,17 @@ impl Repo {
                 }
                 match git::merge_pr(&self.reposlug, self.pr_number, true) {
                     Ok(()) => {
-                        info!("Successfully merged PR {} for repo '{}'.", self.pr_number, self.reposlug);
+                        info!(
+                            "Successfully merged PR {} for repo '{}'.",
+                            self.pr_number, self.reposlug
+                        );
                     }
                     Err(merge_err) => {
                         if merge_err.to_string().contains("Merge conflict") {
-                            warn!("Merge conflict detected for repo {}. A rebase is required.", self.reposlug);
+                            warn!(
+                                "Merge conflict detected for repo {}. A rebase is required.",
+                                self.reposlug
+                            );
                             return Err(merge_err);
                         } else {
                             error!("Merge failed for repo {}: {}", self.reposlug, merge_err);
@@ -398,7 +414,10 @@ impl Repo {
                         }
                     }
                 }
-                Ok(format!("Repo: {} -> Approved and merged PR: {} (# {})", self.reposlug, self.change_id, self.pr_number))
+                Ok(format!(
+                    "Repo: {} -> Approved and merged PR: {} (# {})",
+                    self.reposlug, self.change_id, self.pr_number
+                ))
             }
             cli::ReviewAction::Delete { .. } => {
                 let mut messages = Vec::new();
@@ -409,7 +428,10 @@ impl Repo {
                     messages.push(format!("No open PR found for repo '{}'", self.reposlug));
                 }
                 git::delete_remote_branch_gh(&self.reposlug, &self.change_id)?;
-                messages.push(format!("Deleted remote branch '{}' for repo '{}'", self.change_id, self.reposlug));
+                messages.push(format!(
+                    "Deleted remote branch '{}' for repo '{}'",
+                    self.change_id, self.reposlug
+                ));
                 Ok(messages.join("\n"))
             }
             cli::ReviewAction::Purge {} => {
@@ -427,18 +449,21 @@ impl Repo {
                 let file_patches = diff::reconstruct_files_from_unified_diff(&diff_text);
                 for (filename, orig_text, upd_text) in &file_patches {
                     let indicator = if upd_text.trim().is_empty() { "D" } else { "M" };
-                    output.push_str(&format!("{}\n", utils::indent(&format!("{} {}", indicator, filename), 2)));
+                    output.push_str(&format!(
+                        "{}\n",
+                        utils::indent(&format!("{} {}", indicator, filename), 2)
+                    ));
                     let colored_diff = if upd_text.trim().is_empty() {
-                        diff::generate_diff(&orig_text, "", buffer)
+                        diff::generate_diff(orig_text, "", buffer)
                     } else {
-                        diff::generate_diff(&orig_text, &upd_text, buffer)
+                        diff::generate_diff(orig_text, upd_text, buffer)
                     };
                     for line in colored_diff.lines() {
                         output.push_str(&format!("{}\n", utils::indent(line, 4)));
                     }
                 }
                 if !file_patches.is_empty() {
-                    output.push_str("\n");
+                    output.push('\n');
                 }
             }
             Err(e) => {
@@ -452,11 +477,9 @@ impl Repo {
 fn find_files_in_repo(repo: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     let search_pattern = repo.join(pattern).to_string_lossy().to_string();
     let mut matches = Vec::new();
-    for entry in glob::glob(&search_pattern)? {
-        if let Ok(path) = entry {
-            let relative_path = path.strip_prefix(repo)?.to_path_buf();
-            matches.push(relative_path);
-        }
+    for path in glob::glob(&search_pattern)?.flatten() {
+        let relative_path = path.strip_prefix(repo)?.to_path_buf();
+        matches.push(relative_path);
     }
     Ok(matches)
 }
@@ -567,11 +590,7 @@ mod tests {
 
     #[test]
     fn test_repo_create_repo_from_remote_with_pr() {
-        let repo = Repo::create_repo_from_remote_with_pr(
-            "test-org/test-repo",
-            "SLAM-test",
-            123
-        );
+        let repo = Repo::create_repo_from_remote_with_pr("test-org/test-repo", "SLAM-test", 123);
 
         assert_eq!(repo.reposlug, "test-org/test-repo");
         assert_eq!(repo.change_id, "SLAM-test");
@@ -591,13 +610,7 @@ mod tests {
         let file_ptns: Vec<String> = vec![];
         let change_id = "test-change";
 
-        let result = Repo::create_repo_from_local(
-            &repo_path,
-            root,
-            &change,
-            &file_ptns,
-            change_id
-        );
+        let result = Repo::create_repo_from_local(&repo_path, root, &change, &file_ptns, change_id);
 
         assert!(result.is_some());
         let repo = result.unwrap();
@@ -624,13 +637,7 @@ mod tests {
         let file_ptns = vec!["*.txt".to_string()];
         let change_id = "test-change";
 
-        let result = Repo::create_repo_from_local(
-            &repo_path,
-            root,
-            &change,
-            &file_ptns,
-            change_id
-        );
+        let result = Repo::create_repo_from_local(&repo_path, root, &change, &file_ptns, change_id);
 
         assert!(result.is_some());
         let repo = result.unwrap();
@@ -650,13 +657,7 @@ mod tests {
         let file_ptns: Vec<String> = vec![];
         let change_id = "test-change";
 
-        let result = Repo::create_repo_from_local(
-            &repo_path,
-            root,
-            &change,
-            &file_ptns,
-            change_id
-        );
+        let result = Repo::create_repo_from_local(&repo_path, root, &change, &file_ptns, change_id);
 
         assert!(result.is_none());
     }
