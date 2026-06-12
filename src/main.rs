@@ -1,9 +1,7 @@
 // src/main.rs
 
-
-
 use clap::{CommandFactory, FromArgMatches};
-use eyre::{Result, Context};
+use eyre::{Context, Result};
 use glob::Pattern;
 use itertools::Itertools;
 use log::{debug, info, warn};
@@ -17,9 +15,9 @@ mod cli;
 mod diff;
 mod git;
 mod repo;
-mod utils;
 mod sandbox;
 mod transaction;
+mod utils;
 
 /// Extracts the repository name (the part after '/') from a reposlug.
 /// If the reposlug is not in the expected format, returns the full string.
@@ -59,11 +57,7 @@ fn filter_repos_by_spec(repos: Vec<repo::Repo>, specs: &[String]) -> Vec<repo::R
                 level2
             } else {
                 // Level 3: Exact match on full reposlug.
-                let level3: Vec<repo::Repo> = repos
-                    .iter()
-                    .filter(|r| specs.iter().any(|spec| r.reposlug == *spec))
-                    .cloned()
-                    .collect();
+                let level3: Vec<repo::Repo> = repos.iter().filter(|r| specs.contains(&r.reposlug)).cloned().collect();
                 if !level3.is_empty() {
                     level3
                 } else {
@@ -90,9 +84,7 @@ fn process_create_command(
     buffer: usize,
     repo_ptns: Vec<String>,
     action: Option<cli::CreateAction>,
-) -> Result<()>
- {
-
+) -> Result<()> {
     let total_emoji = "🔍";
     let repos_emoji = "📦";
     let files_emoji = "📄";
@@ -154,9 +146,7 @@ fn process_create_command(
     // Apply changes to repositories in parallel.
     let results: Vec<Result<Option<String>, eyre::Error>> = filtered_repos
         .par_iter()
-        .map(|repo| {
-            repo.create(&root, buffer, commit_msg.as_deref(), simplified)
-        })
+        .map(|repo| repo.create(&root, buffer, commit_msg.as_deref(), simplified))
         .collect();
 
     let successful_diffs: Vec<String> = results
@@ -180,11 +170,7 @@ fn process_create_command(
     Ok(())
 }
 
-fn process_review_command(
-    org: String,
-    action: &cli::ReviewAction,
-    reposlug_ptns: Vec<String>,
-) -> Result<()> {
+fn process_review_command(org: String, action: &cli::ReviewAction, reposlug_ptns: Vec<String>) -> Result<()> {
     let all_reposlugs = git::find_repos_in_org(&org)?;
     info!("Found {} repos in '{}'", all_reposlugs.len(), org);
 
@@ -220,12 +206,17 @@ fn process_review_command(
                 }
             }
         }
-        cli::ReviewAction::Clone { change_id, all: include_closed } => {
+        cli::ReviewAction::Clone {
+            change_id,
+            all: include_closed,
+        } => {
             let all_prs = git::get_prs_for_repos(filtered_reposlugs.clone())?;
 
             if let Some(pr_list) = all_prs.get(change_id) {
                 for (reposlug, pr_number, _author) in pr_list {
-                    repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(reposlug, change_id, *pr_number));
+                    repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(
+                        reposlug, change_id, *pr_number,
+                    ));
                 }
             }
             if *include_closed {
@@ -237,7 +228,9 @@ fn process_review_command(
 
             if let Some(pr_list) = all_prs.get(change_id) {
                 for (reposlug, pr_number, _author) in pr_list {
-                    repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(reposlug, change_id, *pr_number));
+                    repos_with_prs.push(repo::Repo::create_repo_from_remote_with_pr(
+                        reposlug, change_id, *pr_number,
+                    ));
                 }
             }
         }
@@ -258,9 +251,8 @@ fn process_review_command(
             let repo_outputs: Vec<String> = repos_with_prs
                 .par_iter()
                 .map(|repo| {
-                    repo.review(action, false).unwrap_or_else(|e| {
-                        format!("Error processing {}: {}", repo.reposlug, e)
-                    })
+                    repo.review(action, false)
+                        .unwrap_or_else(|e| format!("Error processing {}: {}", repo.reposlug, e))
                 })
                 .collect();
 
@@ -273,11 +265,7 @@ fn process_review_command(
                 println!("Summary:");
                 let summaries: Vec<String> = repos_with_prs
                     .iter()
-                    .map(|repo| {
-                        repo.review(action, true).unwrap_or_else(|e| {
-                            format!("Error: {}", e)
-                        })
-                    })
+                    .map(|repo| repo.review(action, true).unwrap_or_else(|e| format!("Error: {}", e)))
                     .collect();
 
                 for summary in summaries {
@@ -290,9 +278,8 @@ fn process_review_command(
                 let repo_outputs: Vec<String> = repos_with_prs
                     .par_iter()
                     .map(|repo| {
-                        repo.review(action, false).unwrap_or_else(|e| {
-                            format!("Error processing {}: {}", repo.reposlug, e)
-                        })
+                        repo.review(action, false)
+                            .unwrap_or_else(|e| format!("Error processing {}: {}", repo.reposlug, e))
                     })
                     .collect();
 
@@ -306,21 +293,36 @@ fn process_review_command(
     Ok(())
 }
 
-fn setup_logging() -> Result<()> {
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("slam");
+/// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.
+///
+/// We deliberately do NOT use the `dirs` config/data helpers: those honor
+/// `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` only on Linux. On macOS they resolve via system
+/// APIs and return `~/Library/...`, ignoring the env vars. These helpers resolve to the
+/// same XDG layout on every platform.
+fn xdg_data_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
+        let path = PathBuf::from(dir);
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+    dirs::home_dir().map(|h| h.join(".local").join("share"))
+}
 
-    fs::create_dir_all(&log_dir)
-        .context("Failed to create log directory")?;
+fn setup_logging() -> Result<()> {
+    let log_dir = xdg_data_dir().unwrap_or_else(|| PathBuf::from(".")).join("slam");
+
+    fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
     let log_file = log_dir.join("slam.log");
 
-    let target = Box::new(fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file)
-        .context("Failed to open log file")?);
+    let target = Box::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file)
+            .context("Failed to open log file")?,
+    );
 
     env_logger::Builder::from_default_env()
         .target(env_logger::Target::Pipe(target))
@@ -336,35 +338,26 @@ fn main() -> Result<()> {
     let args = cli::SlamCli::from_arg_matches(&cli::SlamCli::command().get_matches())?;
 
     let result = match args.command {
-        cli::SlamCommand::Sandbox { repo_ptns, action } => {
-            match action {
-                cli::SandboxAction::Setup {} => {
-                    sandbox::sandbox_setup(repo_ptns)
-                }
-                cli::SandboxAction::Refresh {} => {
-                    sandbox::sandbox_refresh()
-                }
-            }
-        }
+        cli::SlamCommand::Sandbox { repo_ptns, action } => match action {
+            cli::SandboxAction::Setup {} => sandbox::sandbox_setup(repo_ptns),
+            cli::SandboxAction::Refresh {} => sandbox::sandbox_refresh(),
+        },
         cli::SlamCommand::Create {
             files,
             change_id,
             buffer,
             repo_ptns,
             action,
-        } => {
-            process_create_command(files, change_id, buffer, repo_ptns, action)
-        }
-        cli::SlamCommand::Review { org, action, repo_ptns } => {
-            process_review_command(org, &action, repo_ptns)
-        }
+        } => process_create_command(files, change_id, buffer, repo_ptns, action),
+        cli::SlamCommand::Review { org, action, repo_ptns } => process_review_command(org, &action, repo_ptns),
     };
 
     if let Err(e) = result {
         let error_msg = e.to_string();
 
         // Provide helpful debugging suggestions for common issues
-        if error_msg.contains("Failed to parse open PRs JSON") || error_msg.contains("invalid type: map, expected u64") {
+        if error_msg.contains("Failed to parse open PRs JSON") || error_msg.contains("invalid type: map, expected u64")
+        {
             eprintln!("Error: {}", e);
             eprintln!();
             eprintln!("💡 This appears to be a JSON parsing issue. To troubleshoot:");
@@ -373,7 +366,8 @@ fn main() -> Result<()> {
             eprintln!("   3. Verify repository access and permissions");
             eprintln!();
             eprintln!("For more help, see: https://github.com/scottidler/slam/blob/main/README.md#troubleshooting-common-issues");
-        } else if error_msg.contains("Failed to list open PRs") || error_msg.contains("Failed to list remote branches") {
+        } else if error_msg.contains("Failed to list open PRs") || error_msg.contains("Failed to list remote branches")
+        {
             eprintln!("Error: {}", e);
             eprintln!();
             eprintln!("💡 This appears to be a GitHub CLI or repository access issue:");
@@ -416,10 +410,7 @@ mod tests {
 
     #[test]
     fn test_filter_repos_by_spec_empty() {
-        let repos = vec![
-            create_test_repo("org/repo1"),
-            create_test_repo("org/repo2"),
-        ];
+        let repos = vec![create_test_repo("org/repo1"), create_test_repo("org/repo2")];
 
         let result = filter_repos_by_spec(repos.clone(), &[]);
         assert_eq!(result.len(), 2);
@@ -460,10 +451,7 @@ mod tests {
 
     #[test]
     fn test_filter_repos_by_spec_full_slug_exact() {
-        let repos = vec![
-            create_test_repo("org1/repo"),
-            create_test_repo("org2/repo"),
-        ];
+        let repos = vec![create_test_repo("org1/repo"), create_test_repo("org2/repo")];
 
         let specs = vec!["org1/repo".to_string()];
         let result = filter_repos_by_spec(repos, &specs);
