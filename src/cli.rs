@@ -25,7 +25,7 @@ fn validate_buffer(s: &str) -> Result<usize, String> {
 #[command(
     name = "slam",
     about = "HPA: horizontal PR autoscaler",
-    version = env!("GIT_DESCRIBE"),
+    version = env!("BUILD_VERSION"),
     after_help = "Logs are written to: ~/.local/share/slam/slam.log
 
 This tool helps manage changes across multiple repositories by:

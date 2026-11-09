@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 
-// Built-in version from build.rs via env!("GIT_DESCRIBE")
+// Built-in version from build.rs via env!("BUILD_VERSION")
 
 mod cli;
 mod diff;
@@ -523,8 +523,8 @@ mod tests {
     #[test]
     fn test_built_info_module_exists() {
         // Just test that the built_info module can be referenced
-        // The actual GIT_DESCRIBE value will depend on the build environment
-        let _version = env!("GIT_DESCRIBE");
+        // The actual BUILD_VERSION value will depend on the build environment
+        let _version = env!("BUILD_VERSION");
         // This test mainly ensures the module is properly included
     }
 
